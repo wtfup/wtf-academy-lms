@@ -1,4 +1,5 @@
 import re
+import time
 
 import frappe
 from bs4 import BeautifulSoup
@@ -30,12 +31,27 @@ def get_context():
 	return context
 
 
+def get_csrf_token_with_retry(attempts: int = 3):
+	"""After a cache clear, concurrent page loads on one session (several tabs, or the shared
+	Guest session) each regenerate the CSRF token and update the same tabSessions row. MariaDB
+	then raises 1020 "Record has changed since last read" and the page 500s. That error means
+	"retry the transaction", so do exactly that with a fresh snapshot and a short backoff."""
+	for attempt in range(attempts):
+		try:
+			return frappe.sessions.get_csrf_token()
+		except frappe.QueryDeadlockError:
+			if attempt == attempts - 1:
+				raise
+			frappe.db.rollback()
+			time.sleep(0.05 * (attempt + 1))
+
+
 def get_boot():
 	return frappe._dict(
 		{
 			"frappe_version": frappe.__version__,
 			"read_only_mode": frappe.flags.read_only,
-			"csrf_token": frappe.sessions.get_csrf_token(),
+			"csrf_token": get_csrf_token_with_retry(),
 			"site_name": frappe.local.site,
 			"lms_path": get_lms_path(),
 			"lang": get_user_lang(),
