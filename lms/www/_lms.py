@@ -1,3 +1,4 @@
+import random
 import re
 import time
 
@@ -31,11 +32,12 @@ def get_context():
 	return context
 
 
-def get_csrf_token_with_retry(attempts: int = 3):
+def get_csrf_token_with_retry(attempts: int = 5):
 	"""After a cache clear, concurrent page loads on one session (several tabs, or the shared
-	Guest session) each regenerate the CSRF token and update the same tabSessions row. MariaDB
-	then raises 1020 "Record has changed since last read" and the page 500s. That error means
-	"retry the transaction", so do exactly that with a fresh snapshot and a short backoff."""
+	Guest session) each regenerate the CSRF token and update the same tabSessions / tabUser rows.
+	MariaDB then raises 1020 "Record has changed since last read" and the page 500s. On conflict:
+	roll back, re-read the session (a concurrent request has usually stored a token already, so
+	reuse it without writing), otherwise retry with jittered backoff."""
 	for attempt in range(attempts):
 		try:
 			return frappe.sessions.get_csrf_token()
@@ -43,7 +45,12 @@ def get_csrf_token_with_retry(attempts: int = 3):
 			if attempt == attempts - 1:
 				raise
 			frappe.db.rollback()
-			time.sleep(0.05 * (attempt + 1))
+			time.sleep(random.uniform(0.02, 0.08) * (attempt + 1))
+			# get_session_data() returns the inner session dict (Guest: a stub without a token)
+			fresh = frappe.local.session_obj.get_session_data()
+			if fresh and fresh.get("csrf_token"):
+				frappe.local.session.data = frappe._dict(fresh)
+				return fresh.get("csrf_token")
 
 
 def get_boot():
