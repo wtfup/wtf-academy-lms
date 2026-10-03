@@ -11,9 +11,21 @@ from frappe.utils import ceil
 
 class LMSEnrollment(Document):
 	def before_insert(self):
+		self.validate_member_is_self()
 		self.validate_duplicate_enrollment()
 		self.validate_course_enrollment_eligibility()
 		self.validate_owner()
+
+	def validate_member_is_self(self):
+		"""A learner may only enroll themselves. Without this, a client insert with another
+		user's email as `member` succeeds, and validate_owner() then hands that user the doc.
+		Trusted server paths (save(ignore_permissions=True)) and staff roles are unaffected."""
+		if self.flags.ignore_permissions or frappe.flags.in_install or frappe.flags.in_migrate:
+			return
+		user = frappe.session.user
+		if self.member == user or user == "Administrator" or is_admin() or "System Manager" in frappe.get_roles(user):
+			return
+		frappe.throw(_("You can only enroll yourself in a course."), frappe.PermissionError)
 
 	def validate(self):
 		self.enforce_server_managed_fields()
