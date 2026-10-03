@@ -29,6 +29,22 @@ class LMSEnrollment(Document):
 
 	def validate(self):
 		self.enforce_server_managed_fields()
+		self.validate_identity_fields_locked()
+
+	def validate_identity_fields_locked(self):
+		"""After insert, a learner must not repoint their enrollment: changing `course` to a paid
+		course skipped the payment check (which runs only before_insert), and changing `member`
+		handed the record to someone else. Staff and trusted server code are unaffected."""
+		from lms.lms.utils import PRIVILEGED_ROLES
+
+		if self.is_new() or self.flags.ignore_permissions or PRIVILEGED_ROLES & set(frappe.get_roles()):
+			return
+		previous = self.get_doc_before_save()
+		if not previous:
+			return
+		for field in ("course", "member", "member_type", "payment", "enrollment_from_batch", "role"):
+			if self.meta.has_field(field) and self.get(field) != previous.get(field):
+				frappe.throw(_("You cannot change {0} of an enrollment.").format(field), frappe.PermissionError)
 
 	def enforce_server_managed_fields(self):
 		"""Revert progress / purchased_certificate to their server-set values for non-staff."""

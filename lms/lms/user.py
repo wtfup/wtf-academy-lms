@@ -6,7 +6,13 @@ from frappe.model.naming import append_number_if_name_exists
 from frappe.utils import cint, escape_html, random_string
 from frappe.website.utils import cleanup_page_name, is_signup_disabled
 
+from frappe.rate_limiter import rate_limit
+
 from lms.lms.utils import get_country_code, get_lms_route
+
+# WTF: per-IP signup cap. Without it one script exhausts the site-wide hourly cap (real learners get
+# 'Temporarily Disabled') and sprays verification mail. 20/hour leaves room for a gym on shared Wi-Fi.
+SIGNUP_LIMIT_PER_IP_HOUR = 20
 
 
 def validate_username_duplicates(doc, method):
@@ -25,7 +31,8 @@ def add_lms_student_role(doc, method):
 	doc.append_roles("LMS Student")
 
 
-@frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
+@frappe.whitelist(allow_guest=True, methods=["POST"])  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
+@rate_limit(limit=SIGNUP_LIMIT_PER_IP_HOUR, seconds=60 * 60)
 def sign_up(email: str, full_name: str, verify_terms: bool, user_category: str):
 	if is_signup_disabled():
 		frappe.throw(_("Sign Up is disabled"), _("Not Allowed"))
@@ -90,7 +97,8 @@ def sign_up(email: str, full_name: str, verify_terms: bool, user_category: str):
 		return 2, _("Signup successful. Please ask your administrator to verify your sign-up.")
 
 
-@frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
+@frappe.whitelist(allow_guest=True, methods=["POST"])  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
+@rate_limit(limit=SIGNUP_LIMIT_PER_IP_HOUR, seconds=60 * 60)
 def web_sign_up(email: str, full_name: str, redirect_to: str | None = None) -> tuple[int, str]:
 	"""Drop-in for frappe.core.doctype.user.user.sign_up (the /login#signup form).
 
