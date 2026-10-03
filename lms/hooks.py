@@ -214,6 +214,8 @@ fixtures = ["Custom Field", "Function", "Industry", "LMS Category"]
 #
 override_whitelisted_methods = {
 	# "frappe.desk.search.get_names_for_mentions": "lms.lms.utils.get_names_for_mentions",
+	# WTF: core sign_up re-saves with new_password set -> false "password changed" alert email
+	"frappe.core.doctype.user.user.sign_up": "lms.lms.user.web_sign_up",
 }
 #
 # each overriding function accepts a `data` argument;
@@ -350,3 +352,6 @@ raven_membership_providers = ["lms.raven_provider.get_provider"]
 # on System Manager plus whatever this hook names, and grants the named roles the
 # permissions its own doctypes need on install/migrate.
 raven_integration_manager_roles = ["Moderator"]
+
+# WTF: framework race shims (see lms/wtf_runtime.py)
+before_request = ["lms.wtf_runtime.install_shims"]

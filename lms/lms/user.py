@@ -90,6 +90,57 @@ def sign_up(email: str, full_name: str, verify_terms: bool, user_category: str):
 		return 2, _("Signup successful. Please ask your administrator to verify your sign-up.")
 
 
+@frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
+def web_sign_up(email: str, full_name: str, redirect_to: str | None = None) -> tuple[int, str]:
+	"""Drop-in for frappe.core.doctype.user.user.sign_up (the /login#signup form).
+
+	Core inserts the user with a random new_password and then calls add_roles(), which saves
+	again while new_password is still set; that second save is treated as a password change and
+	mails a brand-new learner "Security Alert: Your password has been changed". Same behaviour
+	here, but the default role is appended before the single insert."""
+	from frappe.www.login import sanitize_redirect
+
+	if is_signup_disabled():
+		frappe.throw(_("Sign Up is disabled"), title=_("Not Allowed"))
+
+	user = frappe.db.get("User", {"email": email})
+	if user:
+		return (0, _("Already Registered")) if user.enabled else (0, _("Registered but disabled"))
+
+	max_signups_allowed_per_hour = cint(frappe.get_system_settings("max_signups_allowed_per_hour") or 300)
+	if frappe.db.get_creation_count("User", 60) >= max_signups_allowed_per_hour:
+		frappe.respond_as_web_page(
+			_("Temporarily Disabled"),
+			_("Too many users signed up recently, so the registration is disabled. Please try back in an hour"),
+			http_status_code=429,
+		)
+		return 0, _("Temporarily Disabled")
+
+	user = frappe.get_doc(
+		{
+			"doctype": "User",
+			"email": email,
+			"first_name": escape_html(full_name),
+			"enabled": 1,
+			"new_password": random_string(10),
+			"user_type": "Website User",
+		}
+	)
+	user.flags.ignore_permissions = True
+	user.flags.ignore_password_policy = True
+	default_role = frappe.db.get_single_value("Portal Settings", "default_role")
+	if default_role:
+		user.append_roles(default_role)
+	user.insert()
+
+	if redirect_to:
+		frappe.cache.hset("redirect_after_login", user.name, sanitize_redirect(redirect_to))
+
+	if user.flags.email_sent:
+		return 1, _("Please check your email for verification")
+	return 2, _("Please ask your administrator to verify your sign-up")
+
+
 def set_country_from_ip(login_manager: object = None, user: str = None):
 	if not user and login_manager:
 		user = login_manager.user
