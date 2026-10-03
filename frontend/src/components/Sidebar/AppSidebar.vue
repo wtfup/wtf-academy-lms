@@ -94,6 +94,24 @@
 				}}
 			</div>
 			<div
+				v-if="!isLoggedIn && !sidebarStore.isSidebarCollapsed"
+				data-testid="guest-cta"
+				class="flex flex-col gap-2 text-ink-gray-9 py-2.5 px-3 bg-surface-base shadow-sm rounded-md"
+			>
+				<div class="flex flex-col text-p-sm gap-1">
+					<div class="font-medium">{{ __('Start learning with WTF Academy') }}</div>
+					<div class="text-ink-gray-7">
+						{{ __('Create a free account to enroll and track your progress.') }}
+					</div>
+				</div>
+				<a :href="safeUrl(authLinks.signup)">
+					<Button variant="solid" :label="__('Sign up free')" class="w-full" />
+				</a>
+				<a :href="safeUrl(authLinks.login)">
+					<Button :label="__('Log in')" class="w-full" />
+				</a>
+			</div>
+			<div
 				v-if="
 					isStudent && !profileIsComplete && !sidebarStore.isSidebarCollapsed
 				"
@@ -247,6 +265,9 @@
 <script setup>
 import { getSidebarLinks } from '@/utils'
 import { usersStore } from '@/stores/user'
+import { sessionStore } from '@/stores/session'
+import { guestAuthLinks } from '@/utils/guestAuthLinks'
+import { safeUrl } from '@/utils/safeUrl'
 import { useSidebar } from '@/stores/sidebar'
 import { useSettings } from '@/stores/settings'
 import { Button, call, Tooltip, toast } from 'frappe-ui'
@@ -297,6 +318,13 @@ import {
 } from '@/stores/notifications'
 
 const { userResource } = usersStore()
+const { isLoggedIn } = sessionStore()
+// window.location (not router.fullPath): the SPA router is mounted under /lms, and the
+// redirect must be the real browser path. Reading currentRoute keeps it reactive.
+const authLinks = computed(() => {
+	void router.currentRoute.value.fullPath
+	return guestAuthLinks(window.location.pathname + window.location.search)
+})
 let sidebarStore = useSidebar()
 const socket = inject('$socket')
 const sidebarLinks = ref(null)
