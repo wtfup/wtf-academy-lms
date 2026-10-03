@@ -57,6 +57,7 @@ import { Button, createResource } from 'frappe-ui'
 import { inject } from 'vue'
 import type { CertificationInfo, Resource, SessionUser } from '@/types'
 import { openExternal } from '@/utils/openExternal'
+import { certificationCacheKey } from '@/utils/certificateButton'
 
 const user = inject<SessionUser>('$user')!
 
@@ -71,6 +72,7 @@ const certification = createResource({
 			course: props.courseName,
 		}
 	},
+	cache: certificationCacheKey(props.courseName),
 	auto: user.data ? true : false,
 }) as Resource<CertificationInfo | null>
 

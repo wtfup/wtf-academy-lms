@@ -151,10 +151,12 @@ import { computed, inject } from 'vue'
 import { Badge, Button, call, createResource, toast } from 'frappe-ui'
 import { useRouter } from 'vue-router'
 import CertificationLinks from '@/components/CertificationLinks.vue'
+import { certificationCacheKey, shouldShowGetCertificate } from '@/utils/certificateButton'
 import VideoPreview from '@/components/VideoPreview.vue'
 import { useTelemetry } from 'frappe-ui/frappe'
 import { openExternal } from '@/utils/openExternal'
 import type {
+	CertificationInfo,
 	CourseDetails,
 	CourseInstructorInfo,
 	Resource,
@@ -245,12 +247,18 @@ const hasCourseStats = computed<boolean>(() =>
 	)
 )
 
-const canGetCertificate = computed<boolean>(() => {
-	return Boolean(
-		props.course.data?.enable_certification &&
-			(props.course.data?.membership?.progress ?? 0) >= 100
-	)
-})
+const certificationInfo = createResource({
+	url: 'lms.lms.api.get_certification_details',
+	makeParams() {
+		return { course: props.course.data?.name }
+	},
+	cache: certificationCacheKey(props.course.data?.name),
+	auto: Boolean(user.data && props.course.data?.name),
+}) as Resource<CertificationInfo | null>
+
+const canGetCertificate = computed<boolean>(() =>
+	shouldShowGetCertificate(props.course.data, certificationInfo.data)
+)
 
 const certificate = createResource({
 	url: 'lms.lms.doctype.lms_certificate.lms_certificate.create_certificate',
@@ -260,6 +268,7 @@ const certificate = createResource({
 		}
 	},
 	onSuccess(data: { name: string; template: string }) {
+		certificationInfo.reload()
 		openExternal(
 			`/api/method/frappe.utils.print_format.download_pdf?doctype=LMS+Certificate&name=${
 				data.name

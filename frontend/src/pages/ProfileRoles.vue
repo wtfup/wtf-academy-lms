@@ -56,6 +56,8 @@ const moderator = ref(false)
 const course_creator = ref(false)
 const batch_evaluator = ref(false)
 const lms_student = ref(false)
+// explicit lookup instead of eval(role): same behaviour, no dynamic code execution
+const roleRefs = { moderator, course_creator, batch_evaluator, lms_student }
 const readOnlyMode = window.read_only_mode
 
 const props = defineProps({
@@ -80,7 +82,7 @@ const roles = createResource({
 			'lms_student',
 		]
 		for (let role of roles) {
-			if (data[role]) eval(role).value = true
+			if (data[role] && roleRefs[role]) roleRefs[role].value = true
 		}
 	},
 })
@@ -100,7 +102,9 @@ const saveRole = async (role) => {
 		role == 'lms_student'
 			? 'LMS Student'
 			: convertToTitleCase(role.split('_').join(' '))
-	const value = eval(role).value
+	const roleRef = roleRefs[role]
+	if (!roleRef) return
+	const value = roleRef.value
 
 	await call('lms.lms.api.save_role', {
 		user: props.profile.data?.name,
