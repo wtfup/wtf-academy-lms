@@ -88,6 +88,7 @@ class TestFreePreviewQuizAccess(BaseTestUtils):
 			f"pvinstr-{hash}@example.com", "Pia", "Instr", ["Course Creator", "Moderator"]
 		)
 		cls.outsider = cls._create_user(f"pvout-{hash}@example.com", "Pat", "Outsider", ["LMS Student"])
+		cls.member = cls._create_user(f"pvmem-{hash}@example.com", "Meg", "Member", ["LMS Student"])
 
 		cls.questions = cls._create_quiz_questions()
 		cls.quiz = cls._create_quiz(cls.questions, title=f"Preview Quiz {hash}")
@@ -100,6 +101,7 @@ class TestFreePreviewQuizAccess(BaseTestUtils):
 		# LMS Quiz.lesson pointer away from the preview lesson.
 		cls.locked_lesson = cls._create_lesson(f"PVLesson Paid {hash}", cls.chapter.name, cls.course.name)
 		frappe.db.set_value("Course Lesson", cls.lesson.name, "include_in_preview", 1)
+		cls._create_enrollment(cls.member.email, cls.course.name)
 
 		# Another published course with its own free preview lesson. Its lessons must
 		# never open a quiz that belongs to the course above.
@@ -128,13 +130,36 @@ class TestFreePreviewQuizAccess(BaseTestUtils):
 		result = self._call(self.outsider.email)
 		self.assertEqual(len(result["questions_by_name"]), len(self.questions))
 
+	def _set_show_answers(self, value):
+		frappe.db.set_value("LMS Quiz", self.quiz.name, "show_answers", value)
+		frappe.clear_document_cache("LMS Quiz", self.quiz.name)
+
+	@staticmethod
+	def _answer_keys(row):
+		return [key for key in row if key.startswith(("is_correct_", "possibility_"))]
+
 	def test_preview_quiz_payload_carries_no_answer_key(self):
-		# Preview access must expose nothing an enrolled learner would not get.
+		# With live answers off, a preview learner who has not submitted gets no
+		# correctness flags, no accepted answers and no explanations.
+		self._set_show_answers(0)
 		result = self._call(self.outsider.email)
+		self.assertTrue(result["questions_by_name"])
 		for row in result["questions_by_name"].values():
-			self.assertEqual([key for key in row if key.startswith("is_correct_")], [])
-			self.assertEqual([key for key in row if key.startswith("possibility_")], [])
+			self.assertEqual(self._answer_keys(row), [])
 			self.assertEqual([key for key in row if key.startswith("explanation_")], [])
+
+	def test_preview_payload_matches_an_enrolled_members_with_live_answers_on(self):
+		# show_answers=1 ships explanations to every permitted reader; preview access
+		# must get exactly what an enrolled member gets, and never the answer key.
+		self._set_show_answers(1)
+		preview = self._call(self.outsider.email)["questions_by_name"]
+		enrolled = self._call(self.member.email)["questions_by_name"]
+		self.assertEqual(set(preview), set(enrolled))
+		self.assertTrue(preview)
+		for name, row in preview.items():
+			self.assertEqual(set(row), set(enrolled[name]))
+			self.assertEqual(self._answer_keys(row), [])
+			self.assertEqual(self._answer_keys(enrolled[name]), [])
 
 	def test_guest_cannot_read_a_free_preview_quiz(self):
 		# Even where the site lets guests browse preview lessons.
