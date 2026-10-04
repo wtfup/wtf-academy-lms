@@ -374,3 +374,96 @@ def queue_account_ready(user, full_name, fields):
 		queue_template(user, ACCOUNT_READY, [first_name(full_name), course_title(course)], course, "signup")
 	except Exception as e:
 		_log(ACCOUNT_READY, None, f"signup queue ({type(e).__name__})")
+
+
+# ---------------------------------------------------------------- payment recorded
+
+
+def _enqueue(method, **kwargs):
+	"""Request-side: run a send job after commit on the short queue. Never raises."""
+	try:
+		if not _token():
+			return
+		frappe.enqueue(f"lms.wtf_whatsapp.{method}", queue="short", enqueue_after_commit=True, **kwargs)
+	except Exception as e:
+		_log(method, None, f"queue failed ({type(e).__name__})")
+
+
+def queue_enrolment_confirmed(payment_name):
+	"""Called by update_payment_record right after payment_received flips 0 -> 1 (next to
+	lms.wtf_meta.queue_purchase); a replayed callback never reaches it."""
+	_enqueue("send_enrolment_confirmed", payment_name=payment_name)
+
+
+PAYMENT_FIELDS = [
+	"name",
+	"amount",
+	"amount_with_gst",
+	"member",
+	"address",
+	"payment_for_document_type",
+	"payment_for_document",
+	"payment_received",
+	"payment_for_certificate",
+]
+
+
+def payment_total(row):
+	return flt(row.get("amount_with_gst")) or flt(row.get("amount"))
+
+
+def billing_phone(row):
+	"""The billing address phone of a payment, if any (send_template falls back to User.mobile_no)."""
+	if row.get("address"):
+		return frappe.db.get_value("Address", row.address, "phone") or None
+	return None
+
+
+def _is_course_purchase(row):
+	return bool(
+		row
+		and row.get("payment_for_document_type") == "LMS Course"
+		and row.get("payment_for_document")
+		and not cint(row.get("payment_for_certificate"))
+	)
+
+
+def send_enrolment_confirmed(payment_name):
+	row = frappe.db.get_value("LMS Payment", payment_name, PAYMENT_FIELDS, as_dict=True)
+	if not _is_course_purchase(row) or not cint(row.payment_received):
+		return
+	course = row.payment_for_document
+	send_template(
+		row.member,
+		ENROLMENT_CONFIRMED,
+		[user_first_name(row.member), format_inr(payment_total(row)), course_title(course)],
+		course,
+		key=row.name,
+		phone=billing_phone(row),
+	)
+
+
+# ---------------------------------------------------------------- certificate issued
+
+
+def on_certificate_insert(doc, method=None):
+	"""LMS Certificate after_insert (doc_events)."""
+	_enqueue("send_certificate_ready", certificate=doc.name)
+
+
+def send_certificate_ready(certificate):
+	cert = frappe.db.get_value(
+		"LMS Certificate", certificate, ["name", "member", "course", "batch_name"], as_dict=True
+	)
+	if not cert or not cert.member:
+		return
+	if cert.course:
+		title = course_title(cert.course)
+		# /lms/courses/<course>/certification shows the learner their certificate card
+		button = f"courses/{cert.course}/certification"
+	elif cert.batch_name:
+		title = frappe.db.get_value("LMS Batch", cert.batch_name, "title") or cert.batch_name
+		button = f"user/{frappe.db.get_value('User', cert.member, 'username')}/certificates"
+	else:
+		return
+	send_template(cert.member, CERTIFICATE_READY, [user_first_name(cert.member), title], button, key=cert.name)

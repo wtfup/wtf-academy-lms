@@ -181,6 +181,8 @@ doc_events = {
 	"LMS Program": {"validate": CHILD_ROW_MOVE_GATE},
 	"LMS Program Course": {"validate": CHILD_ROW_MOVE_GATE},
 	"LMS Program Member": {"validate": CHILD_ROW_MOVE_GATE},
+	# WTF: WhatsApp academy_certificate_ready_v1 (queued after commit, fails open).
+	"LMS Certificate": {"after_insert": "lms.wtf_whatsapp.on_certificate_insert"},
 	"User": {
 		"validate": "lms.lms.user.validate_username_duplicates",
 		"before_insert": "lms.lms.user.add_lms_student_role",

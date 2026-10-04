@@ -2761,6 +2761,12 @@ def update_payment_record(doctype: str, docname: str):
 
 	queue_purchase(data.payment)
 
+	# WTF: WhatsApp academy_enrolment_confirmed_v1, same transition, queued after commit and
+	# fails open (lms/wtf_whatsapp.py).
+	from lms.wtf_whatsapp import queue_enrolment_confirmed
+
+	queue_enrolment_confirmed(data.payment)
+
 
 def get_payment_callback_data(doctype: str, docname: str) -> dict | None:
 	"""The payload of the callback being handled, which is the only thing that
