@@ -403,6 +403,18 @@ class TestLessonLockingIntegration(BaseTestUtils):
 			quiz = self._create_lesson_quiz(self.lessons[0].name, title="Locking Lesson Quiz Open")
 			self.assertTrue(can_access_quiz(quiz.name))
 
+	def test_free_preview_does_not_open_a_locked_lesson_quiz_to_an_enrolled_member(self):
+		# The free-preview grant is for learners who are not enrolled. An enrolled
+		# member stays under the sequential gate even when the lesson is a preview one.
+		self._enable()
+		quiz = self._create_lesson_quiz(self.lessons[2].name, title="Locking Preview Quiz")
+		frappe.db.set_value("Course Lesson", self.lessons[2].name, "include_in_preview", 1)
+
+		from lms.lms.permissions import can_access_quiz
+
+		self.assertIn(self.lessons[2].name, get_locked_lessons(self.course.name))
+		self.assertFalse(can_access_quiz(quiz.name))
+
 	def test_a_quiz_orphaned_from_its_lesson_is_refused_under_the_gate(self):
 		# Deleting a lesson clears LMS Quiz.lesson but leaves LMS Quiz.course, so the
 		# placement has no lesson to check and `None not in locked` holds for every

@@ -725,6 +725,12 @@ def check_answer(quiz: str, question: str, question_type: str, answers: str):
 	ADMIN_ROLES = ("System Manager", "Moderator", "Course Creator", "Batch Evaluator")
 	is_admin = any(role in ADMIN_ROLES for role in frappe.get_roles())
 
+	# The same gate as reading and submitting the quiz: correctness is part of it.
+	from lms.lms.permissions import can_access_quiz
+
+	if not is_admin and not can_access_quiz(quiz):
+		frappe.throw(_("You are not authorized to view this quiz."), frappe.PermissionError)
+
 	if not frappe.db.exists("LMS Quiz Question", {"parent": quiz, "question": question}):
 		frappe.throw(_("Question not found in this quiz."), frappe.PermissionError)
 

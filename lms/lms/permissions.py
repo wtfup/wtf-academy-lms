@@ -12,11 +12,13 @@ core (frappe/permissions.py), CRM (crm.permissions.*), and Raven (raven.permissi
 import frappe
 from frappe import _
 from frappe.query_builder import Bracket
+from frappe.query_builder.functions import Locate
 from pypika.terms import LiteralValue
 
 from lms.lms.utils import (
 	can_modify_batch,
 	can_modify_course,
+	get_editorjs_blocks,
 	get_membership,
 	guest_access_allowed,
 	has_moderator_role,
@@ -322,7 +324,9 @@ def can_access_quiz(quiz: str, *, user: str | None = None) -> bool:
 	  can still be edited before it is embedded anywhere),
 	- course authors / moderators of any course the quiz belongs to, plus enrolled
 	  members of that course,
-	- batch instructors / enrolled members of any batch whose assessment references it.
+	- batch instructors / enrolled members of any batch whose assessment references it,
+	- any signed-in learner (never Guest) not enrolled in the course, when the quiz is in
+	  an include_in_preview lesson of a published course (the free first module).
 
 	A quiz's owning course/lesson is read from LMS Quiz.course / LMS Quiz.lesson (set
 	automatically by Course Lesson.save_lesson_details_in_quiz when the quiz is embedded
@@ -389,9 +393,44 @@ def can_access_quiz(quiz: str, *, user: str | None = None) -> bool:
 			):
 				return True
 
-		return False
+		# Free trial: the first module of a course is open to any signed-in learner.
+		return user != "Guest" and _in_free_preview_lesson(quiz, quiz_row.lesson, user)
 	finally:
 		frappe.session.user = original_user
+
+
+def _in_free_preview_lesson(quiz: str, owning_lesson: str | None, user: str) -> bool:
+	"""Whether ``quiz`` sits in an ``include_in_preview`` lesson of a published course
+	that ``user`` is not enrolled in.
+
+	The lessons considered are LMS Quiz.lesson, any lesson naming the quiz in quiz_id,
+	and any preview lesson whose content embeds it as a quiz block (LMS Quiz.lesson
+	records only the last lesson saved with the block). An enrolled member is left to
+	the membership branch of can_access_quiz, so a sequential course's lock still
+	applies to them on a preview lesson.
+	"""
+	lesson = frappe.qb.DocType("Course Lesson")
+	course = frappe.qb.DocType("LMS Course")
+	preview_lessons = (
+		frappe.qb.from_(lesson)
+		.join(course)
+		.on(course.name == lesson.course)
+		.select(lesson.name, lesson.course, lesson.content)
+		.where((lesson.include_in_preview == 1) & (course.published == 1))
+	)
+	named = lesson.quiz_id == quiz
+	if owning_lesson:
+		named = named | (lesson.name == owning_lesson)
+	rows = list(preview_lessons.where(named).run(as_dict=True))
+	# The embed search is a substring prefilter; the block parse below confirms it.
+	for row in preview_lessons.where(Locate(quiz, lesson.content) > 0).run(as_dict=True):
+		if any(
+			block.get("type") == "quiz" and (block.get("data") or {}).get("quiz") == quiz
+			for block in get_editorjs_blocks(row.content)
+		):
+			rows.append(row)
+
+	return any(not get_membership(row.course, user) for row in rows)
 
 
 def enforces_lesson_completion(course: str) -> bool:
