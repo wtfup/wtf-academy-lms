@@ -54,6 +54,9 @@ def accept(
 		_invalid()
 	payload = frappe._dict(payload)
 
+	# JSON bodies send 1/0/null; sbool leaves non-strings alone
+	if for_payment is None or for_payment == "" or for_payment in (0, 1):
+		for_payment = bool(for_payment)
 	for_payment = sbool(for_payment)
 	if not isinstance(for_payment, bool):
 		_invalid()
@@ -87,18 +90,21 @@ def accept(
 
 def check_override_precedence() -> None:
 	"""after_migrate: the guard only protects the site while it wins the override. App order decides
-	that (frappe.override_whitelisted_method takes the last app), so log loudly if it ever stops."""
+	that (frappe.override_whitelisted_method takes the last app), so log loudly if it ever stops.
+	Never raises: a failed check must not fail the migrate."""
 	try:
 		resolved = frappe.override_whitelisted_method(CORE_CMD)
 		if resolved == GUARD:
 			return
-		frappe.log_error(
-			title="WTF web form override is not the LMS guard",
-			message=(
-				f"{CORE_CMD} resolves to {resolved}, not {GUARD}. Guests may be able to create records "
-				"of any doctype through a public Web Form. Check the installed app order "
-				"(payments must come before lms) and clear the cache."
-			),
+		title = "WTF web form override is not the LMS guard"
+		message = (
+			f"{CORE_CMD} resolves to {resolved}, not {GUARD}. Guests may be able to create records "
+			"of any doctype through a public Web Form. Check the installed app order "
+			"(payments must come before lms) and clear the cache."
 		)
 	except Exception:
-		frappe.log_error(title="WTF web form override check failed")
+		title, message = "WTF web form override check failed", None
+	try:
+		frappe.log_error(title=title, message=message)
+	except Exception:
+		pass

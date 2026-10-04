@@ -221,8 +221,17 @@ class TestWebFormAccept(IntegrationTestCase):
 
 	def test_junk_for_payment_is_validation_error(self):
 		for junk in ("yes", "maybe", "{}"):
-			with self.assertRaises((frappe.ValidationError, frappe.PermissionError), msg=junk):
+			with self.assertRaises(frappe.ValidationError, msg=junk):
 				self._submit(CORE_CMD, self.public.name, {"description": "x"}, for_payment=junk)
+
+	def test_for_payment_ints_none_and_digit_strings_are_booleans(self):
+		for falsy in (0, None, "0", "", False):
+			marker = f"wf-fp-{frappe.generate_hash(length=8)}"
+			doc = self._submit(CORE_CMD, self.public.name, {"description": marker}, for_payment=falsy)
+			self.assertEqual(doc.doctype, "ToDo", repr(falsy))
+		for truthy in (1, "1", True):
+			with self.assertRaises(frappe.PermissionError, msg=repr(truthy)):
+				self._submit(CORE_CMD, self.public.name, {"description": "x"}, for_payment=truthy)
 
 	# ---- F7: rate limit ----
 	def test_guard_is_rate_limited_like_core(self):
@@ -267,28 +276,37 @@ class TestWebFormAccept(IntegrationTestCase):
 		# a variant is a different string than doc_type, so it is a 403: nothing is inserted at all
 		self.assertEqual(frappe.db.count("ToDo", {"description": marker}), 0)
 
-	# ---- F8: full dispatch through frappe.handler ----
-	def test_handler_dispatch_resolves_to_guard_and_rejects_foreign_doctype(self):
+	# ---- F8: full dispatch through frappe.handler.execute_cmd ----
+	def _dispatch(self, cmd, method, **form):
+		from frappe.handler import execute_cmd
+
 		frappe.set_user("Guest")
+		frappe.local.request = SimpleNamespace(method=method, path=f"/api/method/{cmd}")
+		frappe.local.request_ip = f"10.8.{frappe.generate_hash(length=3)}"
+		frappe.local.form_dict = frappe._dict(cmd=cmd, **form)
 		try:
-			for cmd in (CORE_CMD, PAYMENTS_CMD):
-				frappe.local.form_dict = frappe._dict(
-					cmd=cmd,
-					web_form=self.public.name,
-					data=json.dumps({"doctype": "Contact", "description": "x"}),
-				)
-				frappe.local.request = SimpleNamespace(method="POST")
-				resolved = frappe.override_whitelisted_method(frappe.local.form_dict.cmd)
-				self.assertEqual(resolved, GUARD)
-				method = frappe.get_attr(resolved)
-				self.assertIn(method, frappe.whitelisted)
-				self.assertIn(method, frappe.guest_methods)
-				self.assertEqual(frappe.allowed_http_methods_for_whitelisted_func[method], ["POST", "PUT"])
-				with self.assertRaises(frappe.PermissionError):
-					frappe.call(method, **{k: v for k, v in frappe.local.form_dict.items() if k != "cmd"})
+			return execute_cmd(cmd)
 		finally:
 			frappe.set_user("Administrator")
 			frappe.local.form_dict = frappe._dict()
+
+	def test_handler_dispatch_runs_override_whitelist_and_method_checks(self):
+		for cmd in (CORE_CMD, PAYMENTS_CMD):
+			evil = json.dumps({"doctype": "Contact", "description": "x"})
+			before = frappe.db.count("Contact")
+			with self.assertRaises(frappe.PermissionError):
+				self._dispatch(cmd, "POST", web_form=self.public.name, data=evil)
+			self.assertEqual(frappe.db.count("Contact"), before)
+
+			# the guard's registry entry is POST/PUT only: a GET must be refused before it runs
+			marker = f"wf-get-{frappe.generate_hash(length=8)}"
+			with self.assertRaises(frappe.PermissionError):
+				self._dispatch(cmd, "GET", web_form=self.public.name, data=json.dumps({"description": marker}))
+			self.assertFalse(frappe.db.exists("ToDo", {"description": marker}))
+
+			marker = f"wf-disp-{frappe.generate_hash(length=8)}"
+			self._dispatch(cmd, "POST", web_form=self.public.name, data=json.dumps({"description": marker}))
+			self.assertTrue(frappe.db.exists("ToDo", {"description": marker}), cmd)
 
 	# ---- F5: after_migrate precedence check ----
 	def test_after_migrate_logs_when_override_is_not_the_guard(self):
@@ -301,3 +319,12 @@ class TestWebFormAccept(IntegrationTestCase):
 		with patch("frappe.override_whitelisted_method", return_value=PAYMENTS_CMD):
 			check_override_precedence()  # must log, not raise
 		self.assertEqual(frappe.db.count("Error Log", {"method": ["like", "%web form override%"]}), before + 1)
+
+	def test_after_migrate_check_does_not_raise_when_logging_fails(self):
+		from lms.lms.web_form_guard import check_override_precedence
+
+		with (
+			patch("frappe.override_whitelisted_method", return_value=PAYMENTS_CMD),
+			patch("frappe.log_error", side_effect=Exception("db down")),
+		):
+			check_override_precedence()
