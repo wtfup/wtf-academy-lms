@@ -130,6 +130,7 @@
 									class="lucide-file-text h-4 w-4 text-ink-gray-9 me-2"
 								/>
 								{{ lesson.title }}
+								<span v-if="isFreePreview(lesson)" class="wtf-free-chip">FREE</span>
 								<div v-if="allowEdit" class="ms-auto flex items-center gap-2">
 									<span
 										@click.prevent="
@@ -174,6 +175,7 @@
 
 <script setup lang="ts">
 import { Button, TextInput, Tooltip, toast } from 'frappe-ui'
+import { isFreePreview } from '@/utils/freePreview'
 import { computed, inject, nextTick, ref, watch } from 'vue'
 import Draggable from 'vuedraggable'
 import { Disclosure, DisclosureButton, DisclosurePanel } from '@headlessui/vue'

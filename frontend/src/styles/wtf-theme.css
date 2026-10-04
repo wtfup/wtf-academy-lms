@@ -1,0 +1,58 @@
+/* WTF Academy theme layer: brand tokens over frappe-ui (1.0.0-beta.29).
+   Only variables and a few scoped rules, so upstream merges never conflict
+   with component code. Token names verified against
+   frappe-ui/tailwind/generated/colors.json and radius.json.
+   Light values sit on :root:not([data-theme='dark']) so they never beat the
+   dark theme's [data-theme='dark'] block at equal specificity. */
+:root:not([data-theme='dark']) {
+	--surface-gray-7: #0d0d0d; /* brand ink */
+	--surface-gray-10: #0d0d0d; /* solid gray Button background */
+	--surface-gray-9: #262626; /* solid gray Button hover */
+	--surface-red-7: #d2000b; /* solid red Button background */
+	--surface-red-8: #b0000a; /* solid red Button hover */
+	--surface-red-9: #8f0008; /* solid red Button pressed */
+	--ink-red-6: #d2000b;
+	--surface-sidebar: #0d0d0d;
+	--outline-gray-1: #eef0f3;
+}
+
+:root {
+	--radius-4: 8px;
+	--radius-6: 12px;
+	--radius-7: 16px;
+	--radius-lg: 12px;
+	--radius-xl: 16px;
+	font-family: 'Inter', 'InterVar', system-ui, sans-serif;
+}
+
+/* Sidebar sits on near-black, so the ink and hover surfaces are inverted
+   inside this scope only (never globally). Contrast on #0d0d0d:
+   #a8adb5 8.3:1, #d9dce1 13.7:1, #eef0f3 16.5:1, #f6f7f8 17.4:1. */
+.wtf-sidebar {
+	--ink-gray-4: #9aa0a8;
+	--ink-gray-5: #a8adb5;
+	--ink-gray-7: #d9dce1;
+	--ink-gray-8: #eef0f3;
+	--ink-gray-9: #f6f7f8;
+	--ink-base: #f6f7f8;
+	--surface-base: #0d0d0d;
+	--surface-gray-2: #1f1f1f; /* link hover */
+	--surface-gray-3: #2a2a2a;
+	--surface-elevation-3: #262626; /* active link */
+	--outline-gray-3: #5a5f66;
+	color: #f6f7f8;
+}
+
+.wtf-free-chip {
+	display: inline-flex;
+	align-items: center;
+	margin-inline-start: 0.5rem;
+	padding: 0 0.5rem;
+	height: 1.25rem;
+	border-radius: 9999px;
+	background: #fde7e8;
+	color: #b0000a;
+	font-size: 0.6875rem;
+	font-weight: 700;
+	letter-spacing: 0.04em;
+}

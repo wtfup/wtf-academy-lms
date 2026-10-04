@@ -1,6 +1,7 @@
 @import 'frappe-ui/style.css';
 @import 'frappe-ui/list-style.css';
 @import './styles/blockEditor.css';
+@import './styles/wtf-theme.css';
 
 /* Nothing has ever painted the document. frappe-ui's style.css declares the
    theme variables but sets no background on html or body, so the canvas stayed

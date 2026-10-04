@@ -92,6 +92,7 @@
 										class="size-4 stroke-1.5 shrink-0 text-ink-gray-7"
 									/>
 									<span class="truncate flex-1">{{ lesson.title }}</span>
+									<span v-if="isFreePreview(lesson)" class="wtf-free-chip">FREE</span>
 									<template v-if="lesson.locked">
 										<LockKeyhole
 											class="size-4 stroke-1.5 shrink-0 text-ink-gray-4"
@@ -121,6 +122,7 @@
 import { computed, watch, watchEffect } from 'vue'
 import { useRoute } from 'vue-router'
 import { createResource } from 'frappe-ui'
+import { isFreePreview } from '@/utils/freePreview'
 import { Disclosure, DisclosureButton, DisclosurePanel } from '@headlessui/vue'
 import {
 	ChevronDown,
