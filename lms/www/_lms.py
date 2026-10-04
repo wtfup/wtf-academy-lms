@@ -10,6 +10,7 @@ from frappe.utils.data import escape_html
 from frappe.utils.jinja_globals import is_rtl
 from frappe.utils.telemetry import capture
 
+from lms import wtf_meta
 from lms.lms.utils import get_lms_path, get_lms_route
 
 no_cache = 1
@@ -27,6 +28,8 @@ def get_context():
 	context.meta = get_meta(app_path, title, favicon)
 	context.title = title
 	context.favicon = favicon
+	# WTF: public pixel / GA4 ids and a just-paid Purchase (lms/templates/wtf_tracking.html)
+	context.wtf_tracking = wtf_meta.get_browser_tracking()
 
 	capture("active_site", "lms")
 	return context
