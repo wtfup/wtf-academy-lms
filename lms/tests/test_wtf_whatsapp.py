@@ -107,7 +107,11 @@ class TestApprovalCheck(_SiteConf):
 		response = MagicMock(status_code=status_code)
 		response.json.return_value = {"ok": True, "result": rows}
 		get = MagicMock(return_value=response)
-		with patch.dict(frappe.conf, CONF), patch.object(frappe, "cache", cache), patch.object(wa.requests, "get", get):
+		with (
+			patch.dict(frappe.conf, CONF),
+			patch.object(frappe, "cache", cache),
+			patch.object(wa.requests, "get", get),
+		):
 			result = wa.template_statuses()
 		return result, cache, get
 
@@ -154,7 +158,9 @@ class SendHarness(_SiteConf):
 
 	def setUp(self):
 		super().setUp()
-		self.user_row = frappe._dict(first_name="Riya Sharma", mobile_no=PHONE, wtf_whatsapp_opt_in=1, enabled=1)
+		self.user_row = frappe._dict(
+			first_name="Riya Sharma", mobile_no=PHONE, wtf_whatsapp_opt_in=1, enabled=1
+		)
 
 	def send(self, *args, post=None, existing=None, statuses=None, insert_error=None, conf=None, **kwargs):
 		db = MagicMock()
@@ -177,7 +183,9 @@ class SendHarness(_SiteConf):
 			patch.dict(frappe.conf, conf if conf is not None else CONF),
 			patch.object(frappe, "db", db),
 			patch.object(frappe, "get_doc", get_doc),
-			patch.object(wa, "template_statuses", return_value=statuses if statuses is not None else self.statuses),
+			patch.object(
+				wa, "template_statuses", return_value=statuses if statuses is not None else self.statuses
+			),
 			patch.object(wa.requests, "post", post),
 			patch("frappe.log_error") as log_error,
 		):
@@ -230,13 +238,25 @@ class TestSendTemplate(SendHarness):
 		self.assertNotIn("button_params", r.post.call_args.kwargs["json"])
 
 	def test_empty_token_is_a_noop(self):
-		r = self.send("riya@example.com", "academy_account_ready_v1", ["Riya", "X"], key="k", conf={"wastudio_token": ""})
+		r = self.send(
+			"riya@example.com",
+			"academy_account_ready_v1",
+			["Riya", "X"],
+			key="k",
+			conf={"wastudio_token": ""},
+		)
 		self.assertEqual(r.result, "disabled")
 		r.post.assert_not_called()
 		r.get_doc.assert_not_called()
 
 	def test_default_base_url(self):
-		r = self.send("riya@example.com", "academy_account_ready_v1", ["Riya", "X"], key="k", conf={"wastudio_token": TOKEN})
+		r = self.send(
+			"riya@example.com",
+			"academy_account_ready_v1",
+			["Riya", "X"],
+			key="k",
+			conf={"wastudio_token": TOKEN},
+		)
 		self.assertEqual(r.post.call_args.args[0], "https://wastudio.wtflabs.ai/api/v1/sendTemplateMessage")
 
 	def test_unknown_template_is_refused(self):
@@ -245,7 +265,13 @@ class TestSendTemplate(SendHarness):
 		r.post.assert_not_called()
 
 	def test_explicit_phone_wins_over_the_users_mobile(self):
-		r = self.send("riya@example.com", "academy_enrolment_confirmed_v1", ["Riya", "₹1", "X"], key="p", phone="9123456789")
+		r = self.send(
+			"riya@example.com",
+			"academy_enrolment_confirmed_v1",
+			["Riya", "₹1", "X"],
+			key="p",
+			phone="9123456789",
+		)
 		self.assertEqual(r.post.call_args.kwargs["params"], {"whatsappNumber": "919123456789"})
 
 	def test_a_bare_phone_can_be_the_recipient_for_utility(self):
@@ -315,13 +341,17 @@ class TestIdempotency(SendHarness):
 class TestOptInGating(SendHarness):
 	def test_marketing_needs_the_opt_in(self):
 		self.user_row.wtf_whatsapp_opt_in = 0
-		r = self.send("riya@example.com", "academy_trial_day1_v1", ["Riya", "X"], button_param="x", key="trial")
+		r = self.send(
+			"riya@example.com", "academy_trial_day1_v1", ["Riya", "X"], button_param="x", key="trial"
+		)
 		self.assertEqual(r.result, "skipped_no_opt_in")
 		r.post.assert_not_called()
 		r.get_doc.assert_not_called()
 
 	def test_marketing_to_an_opted_in_user_is_sent(self):
-		r = self.send("riya@example.com", "academy_trial_day1_v1", ["Riya", "X"], button_param="x", key="trial")
+		r = self.send(
+			"riya@example.com", "academy_trial_day1_v1", ["Riya", "X"], button_param="x", key="trial"
+		)
 		self.assertEqual(r.result, "sent")
 
 	def test_marketing_to_a_bare_phone_is_never_sent(self):
@@ -362,7 +392,13 @@ class TestFailOpen(SendHarness):
 	def test_http_error_is_recorded_failed_and_logged_masked(self):
 		response = MagicMock(status_code=400)
 		response.json.return_value = {"error": f"bad number {PHONE} token {TOKEN}"}
-		r = self.send("riya@example.com", "academy_account_ready_v1", ["Riya", "X"], key="s", post=MagicMock(return_value=response))
+		r = self.send(
+			"riya@example.com",
+			"academy_account_ready_v1",
+			["Riya", "X"],
+			key="s",
+			post=MagicMock(return_value=response),
+		)
 		self.assertEqual(r.result, "failed")
 		final = r.db.set_value.call_args.args[2]
 		self.assertEqual(final["status"], "failed")
@@ -378,7 +414,13 @@ class TestFailOpen(SendHarness):
 	def test_unsuccessful_result_body_is_a_failure(self):
 		response = MagicMock(status_code=200)
 		response.json.return_value = {"result": "error", "info": "template paused"}
-		r = self.send("riya@example.com", "academy_account_ready_v1", ["Riya", "X"], key="s", post=MagicMock(return_value=response))
+		r = self.send(
+			"riya@example.com",
+			"academy_account_ready_v1",
+			["Riya", "X"],
+			key="s",
+			post=MagicMock(return_value=response),
+		)
 		self.assertEqual(r.result, "failed")
 
 	def test_timeout_never_raises_and_never_logs_secrets(self):
@@ -439,7 +481,9 @@ class TestShippedSchema(unittest.TestCase):
 		return os.path.dirname(lms.__file__)
 
 	def test_dedupe_log_doctype(self):
-		path = os.path.join(self._app(), "lms", "doctype", "wtf_whatsapp_message", "wtf_whatsapp_message.json")
+		path = os.path.join(
+			self._app(), "lms", "doctype", "wtf_whatsapp_message", "wtf_whatsapp_message.json"
+		)
 		with open(path) as f:
 			meta = json.load(f)
 		self.assertEqual(meta["name"], wa.DOCTYPE)
@@ -448,7 +492,8 @@ class TestShippedSchema(unittest.TestCase):
 			self.assertIn(name, fields)
 		self.assertEqual(fields["dedupe_key"].get("unique"), 1)
 		self.assertEqual(
-			set(fields["status"]["options"].split("\n")), {"sending", "sent", "failed", "skipped_not_approved"}
+			set(fields["status"]["options"].split("\n")),
+			{"sending", "sent", "failed", "skipped_not_approved"},
 		)
 		roles = {p["role"] for p in meta["permissions"]}
 		self.assertEqual(roles, {"System Manager"})

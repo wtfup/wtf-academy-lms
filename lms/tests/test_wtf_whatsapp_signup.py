@@ -52,13 +52,19 @@ class SignupHarness(unittest.TestCase):
 			created.update(values)
 			doc = MagicMock()
 			doc.name = values["email"]
-			doc.flags = SimpleNamespace(email_sent=True, ignore_permissions=False, ignore_password_policy=False)
+			doc.flags = SimpleNamespace(
+				email_sent=True, ignore_permissions=False, ignore_password_policy=False
+			)
 			return doc
 
 		queue = MagicMock(side_effect=queue_error)
 		with (
 			patch.object(user_module, "is_signup_disabled", return_value=False),
-			patch.object(user_module, "local_redirect_path", side_effect=lambda r: r if r and r.startswith("/") else None),
+			patch.object(
+				user_module,
+				"local_redirect_path",
+				side_effect=lambda r: r if r and r.startswith("/") else None,
+			),
 			patch.object(frappe, "db", db),
 			patch.object(frappe, "get_doc", side_effect=get_doc),
 			patch.object(frappe, "get_system_settings", return_value=300),
@@ -104,7 +110,11 @@ class TestSignupWhatsApp(SignupHarness):
 
 	def test_account_ready_is_utility_so_it_goes_without_consent(self):
 		r = self.run_signup(
-			"riya@example.com", "Riya", "/lms/courses/sports-nutrition", mobile_no="9876543210", whatsapp_opt_in=None
+			"riya@example.com",
+			"Riya",
+			"/lms/courses/sports-nutrition",
+			mobile_no="9876543210",
+			whatsapp_opt_in=None,
 		)
 		self.assertEqual(r.created["wtf_whatsapp_opt_in"], 0)
 		r.queue.assert_called_once()
@@ -142,7 +152,11 @@ class TestSignupWhatsApp(SignupHarness):
 
 	def test_invalid_number_is_ignored_and_signup_succeeds(self):
 		r = self.run_signup(
-			"riya@example.com", "Riya", "/lms/courses/sports-nutrition", mobile_no="12345", whatsapp_opt_in="1"
+			"riya@example.com",
+			"Riya",
+			"/lms/courses/sports-nutrition",
+			mobile_no="12345",
+			whatsapp_opt_in="1",
 		)
 		self.assertEqual(r.result[0], 1)
 		self.assertNotIn("mobile_no", r.created)

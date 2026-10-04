@@ -112,7 +112,9 @@ class TestEnrolmentConfirmed(_SiteConf):
 		return send
 
 	def test_sends_name_amount_and_course_with_the_billing_phone(self):
-		send = self._send(payment(address="ADDR-1", amount=20000, amount_with_gst=24999), address_phone="98765 43210")
+		send = self._send(
+			payment(address="ADDR-1", amount=20000, amount_with_gst=24999), address_phone="98765 43210"
+		)
 		send.assert_called_once_with(
 			"riya@example.com",
 			wa.ENROLMENT_CONFIRMED,
@@ -170,7 +172,9 @@ class TestCertificateReady(_SiteConf):
 		return send
 
 	def test_course_certificate_links_the_course_certification_page(self):
-		send = self._send(frappe._dict(name="CERT-1", member="riya@example.com", course="sports-nutrition", batch_name=None))
+		send = self._send(
+			frappe._dict(name="CERT-1", member="riya@example.com", course="sports-nutrition", batch_name=None)
+		)
 		send.assert_called_once_with(
 			"riya@example.com",
 			wa.CERTIFICATE_READY,
@@ -180,7 +184,9 @@ class TestCertificateReady(_SiteConf):
 		)
 
 	def test_batch_certificate_links_the_profile_certificates(self):
-		send = self._send(frappe._dict(name="CERT-1", member="riya@example.com", course=None, batch_name="B-1"))
+		send = self._send(
+			frappe._dict(name="CERT-1", member="riya@example.com", course=None, batch_name="B-1")
+		)
 		args = send.call_args.args
 		self.assertEqual(args[2], ["Riya", "June Batch"])
 		self.assertEqual(args[3], "user/riya/certificates")
