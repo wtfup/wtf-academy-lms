@@ -145,6 +145,7 @@ import {
 import { computed, ref, watch } from 'vue'
 import { getVideoPreview, getYouTubeId } from '@/utils/video'
 import { safeUrl } from '@/utils/safeUrl'
+import { isUploadedMedia } from '@/utils/mediaUrl'
 
 // Only formats browsers can actually play. Reject the rest at upload time so a
 // course never ends up with an unplayable preview (e.g. .MOV/H.265).
@@ -225,13 +226,11 @@ const emit = defineEmits<{
 const preview = computed(() => getVideoPreview(props.modelValue))
 
 // Whether the current value is an actually-uploaded video. Uploads are stored as
-// a /files/ (or /private/files/) path; anything else is a link. We key off the
-// path (NOT getVideoPreview's 'file' type), so a half-typed link (e.g. just "h")
-// doesn't momentarily classify as a file and swap the URL input out mid-keystroke.
-const isUploadedVideo = computed<boolean>(() => {
-	const v = props.modelValue || ''
-	return v.startsWith('/files/') || v.startsWith('/private/files/')
-})
+// a /files/ (or /private/files/) path or a media-CDN URL; anything else is a link.
+// We key off the URL (NOT getVideoPreview's 'file' type), so a half-typed link
+// (e.g. just "h") doesn't momentarily classify as a file and swap the URL input
+// out mid-keystroke.
+const isUploadedVideo = computed<boolean>(() => isUploadedMedia(props.modelValue))
 
 // Reset the in-browser playback error whenever the source changes.
 const videoError = ref<boolean>(false)
