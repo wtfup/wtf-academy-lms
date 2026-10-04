@@ -308,3 +308,69 @@ def queue_template(user_or_phone, template, params, button_param=None, key=None,
 		)
 	except Exception as e:
 		_log(template, phone, f"queue failed ({type(e).__name__})")
+
+
+# ---------------------------------------------------------------- helpers shared by triggers
+
+
+def first_name(full_name):
+	parts = str(full_name or "").strip().split()
+	return parts[0] if parts else "there"
+
+
+def user_first_name(user):
+	return first_name(frappe.db.get_value("User", user, "first_name"))
+
+
+def course_title(course):
+	return frappe.db.get_value("LMS Course", course, "title") or course
+
+
+COURSE_PATH = re.compile(r"^/(?:lms/)?courses/([^/?#]+)")
+
+
+def course_from_path(path):
+	"""The LMS Course slug in a /lms/courses/<slug>... (or /courses/<slug>) path, if it exists."""
+	match = COURSE_PATH.match(str(path or ""))
+	if not match:
+		return None
+	slug = match.group(1)
+	return slug if frappe.db.exists("LMS Course", slug) else None
+
+
+def parse_opt_in(value):
+	if isinstance(value, str):
+		return 1 if value.strip().lower() in ("1", "true", "yes", "on") else 0
+	return 1 if value else 0
+
+
+# ---------------------------------------------------------------- signup
+
+
+def signup_fields(mobile_no=None, whatsapp_opt_in=None, redirect_path=None):
+	"""User fields for a new signup: the number (only if valid and not on another user, since
+	User.mobile_no is unique), the WhatsApp consent (only with a stored number) and the course
+	slug from the redirect. Never raises."""
+	fields = {"wtf_whatsapp_opt_in": 0}
+	try:
+		phone = normalize_phone(mobile_no)
+		if phone and not frappe.db.exists("User", {"mobile_no": phone}):
+			fields["mobile_no"] = phone
+			fields["wtf_whatsapp_opt_in"] = parse_opt_in(whatsapp_opt_in)
+		course = course_from_path(redirect_path)
+		if course:
+			fields["wtf_signup_course"] = course
+	except Exception as e:
+		_log(ACCOUNT_READY, None, f"signup fields ({type(e).__name__})")
+	return fields
+
+
+def queue_account_ready(user, full_name, fields):
+	"""academy_account_ready_v1 (utility) right after signup, when a number and course are known."""
+	try:
+		course = fields.get("wtf_signup_course")
+		if not fields.get("mobile_no") or not course:
+			return
+		queue_template(user, ACCOUNT_READY, [first_name(full_name), course_title(course)], course, "signup")
+	except Exception as e:
+		_log(ACCOUNT_READY, None, f"signup queue ({type(e).__name__})")

@@ -129,13 +129,25 @@ def local_redirect_path(redirect_to: str | None) -> str | None:
 
 @frappe.whitelist(allow_guest=True, methods=["POST"])  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @rate_limit(limit=SIGNUP_LIMIT_PER_IP_HOUR, seconds=60 * 60)
-def web_sign_up(email: str, full_name: str, redirect_to: str | None = None) -> tuple[int, str]:
+def web_sign_up(
+	email: str,
+	full_name: str,
+	redirect_to: str | None = None,
+	mobile_no: str | None = None,
+	whatsapp_opt_in: str | int | bool | None = None,
+) -> tuple[int, str]:
 	"""Drop-in for frappe.core.doctype.user.user.sign_up (the /login#signup form).
 
 	Core inserts the user with a random new_password and then calls add_roles(), which saves
 	again while new_password is still set; that second save is treated as a password change and
 	mails a brand-new learner "Security Alert: Your password has been changed". Same behaviour
-	here, but the default role is appended before the single insert."""
+	here, but the default role is appended before the single insert.
+
+	WTF: optional mobile_no (Indian mobile, stored as 91XXXXXXXXXX; invalid or already used
+	numbers are ignored) and whatsapp_opt_in (1/true/on = consent to WhatsApp updates). With a
+	number and a course in redirect_to, academy_account_ready_v1 is queued (lms/wtf_whatsapp.py)."""
+	from lms.wtf_whatsapp import queue_account_ready, signup_fields
+
 	if is_signup_disabled():
 		frappe.throw(_("Sign Up is disabled"), title=_("Not Allowed"))
 
@@ -152,6 +164,10 @@ def web_sign_up(email: str, full_name: str, redirect_to: str | None = None) -> t
 		)
 		return 0, _("Temporarily Disabled")
 
+	# stored as a path: the site's update-password page refuses absolute (and http://) URLs
+	redirect_path = local_redirect_path(redirect_to)
+	whatsapp = signup_fields(mobile_no, whatsapp_opt_in, redirect_path)
+
 	user = frappe.get_doc(
 		{
 			"doctype": "User",
@@ -160,6 +176,7 @@ def web_sign_up(email: str, full_name: str, redirect_to: str | None = None) -> t
 			"enabled": 1,
 			"new_password": random_string(10),
 			"user_type": "Website User",
+			**whatsapp,
 		}
 	)
 	user.flags.ignore_permissions = True
@@ -169,10 +186,9 @@ def web_sign_up(email: str, full_name: str, redirect_to: str | None = None) -> t
 		user.append_roles(default_role)
 	user.insert()
 
-	# stored as a path: the site's update-password page refuses absolute (and http://) URLs
-	redirect_path = local_redirect_path(redirect_to)
 	if redirect_path:
 		frappe.cache.hset("redirect_after_login", user.name, redirect_path)
+	queue_account_ready(user.name, full_name, whatsapp)
 
 	if user.flags.email_sent:
 		return 1, _("Please check your email for verification")
