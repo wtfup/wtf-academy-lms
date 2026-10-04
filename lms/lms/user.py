@@ -168,23 +168,37 @@ def web_sign_up(
 	redirect_path = local_redirect_path(redirect_to)
 	whatsapp = signup_fields(mobile_no, whatsapp_opt_in, redirect_path)
 
-	user = frappe.get_doc(
-		{
-			"doctype": "User",
-			"email": email,
-			"first_name": escape_html(full_name),
-			"enabled": 1,
-			"new_password": random_string(10),
-			"user_type": "Website User",
-			**whatsapp,
-		}
-	)
-	user.flags.ignore_permissions = True
-	user.flags.ignore_password_policy = True
-	default_role = frappe.db.get_single_value("Portal Settings", "default_role")
-	if default_role:
-		user.append_roles(default_role)
-	user.insert()
+	def insert_user(extra):
+		user = frappe.get_doc(
+			{
+				"doctype": "User",
+				"email": email,
+				"first_name": escape_html(full_name),
+				"enabled": 1,
+				"new_password": random_string(10),
+				"user_type": "Website User",
+				**extra,
+			}
+		)
+		user.flags.ignore_permissions = True
+		user.flags.ignore_password_policy = True
+		default_role = frappe.db.get_single_value("Portal Settings", "default_role")
+		if default_role:
+			user.append_roles(default_role)
+		user.insert()
+		return user
+
+	try:
+		user = insert_user(whatsapp)
+	except frappe.UniqueValidationError:
+		# User.mobile_no is unique: a concurrent signup took this number after signup_fields
+		# checked it. Nothing else is written yet, so roll back and sign up without the number.
+		if "mobile_no" not in whatsapp:
+			raise
+		frappe.db.rollback()
+		whatsapp = {key: value for key, value in whatsapp.items() if key != "mobile_no"}
+		whatsapp["wtf_whatsapp_opt_in"] = 0
+		user = insert_user(whatsapp)
 
 	if redirect_path:
 		frappe.cache.hset("redirect_after_login", user.name, redirect_path)

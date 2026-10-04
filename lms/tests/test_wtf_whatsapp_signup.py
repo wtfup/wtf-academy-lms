@@ -25,7 +25,9 @@ class SignupHarness(unittest.TestCase):
 	def tearDown(self):
 		frappe.local.request = self._request
 
-	def run_signup(self, *args, phone_taken=False, courses=None, queue_error=None, **kwargs):
+	def run_signup(
+		self, *args, phone_taken=False, courses=None, queue_error=None, mobile_race=False, **kwargs
+	):
 		courses = {"sports-nutrition": "Sports Nutrition"} if courses is None else courses
 		db = MagicMock()
 		db.get.return_value = None
@@ -47,14 +49,19 @@ class SignupHarness(unittest.TestCase):
 		db.exists.side_effect = exists
 		db.get_value.side_effect = get_value
 		created = {}
+		attempts = []
 
 		def get_doc(values):
+			attempts.append(dict(values))
+			created.clear()
 			created.update(values)
 			doc = MagicMock()
 			doc.name = values["email"]
 			doc.flags = SimpleNamespace(
 				email_sent=True, ignore_permissions=False, ignore_password_policy=False
 			)
+			if mobile_race and "mobile_no" in values and len(attempts) == 1:
+				doc.insert.side_effect = frappe.UniqueValidationError("Mobile No already exists")
 			return doc
 
 		queue = MagicMock(side_effect=queue_error)
@@ -73,7 +80,7 @@ class SignupHarness(unittest.TestCase):
 			patch("frappe.log_error"),
 		):
 			result = user_module.web_sign_up(*args, **kwargs)
-		return SimpleNamespace(result=result, created=created, queue=queue)
+		return SimpleNamespace(result=result, created=created, queue=queue, attempts=attempts, db=db)
 
 
 class TestBackwardCompatibleSignup(SignupHarness):
@@ -176,6 +183,23 @@ class TestSignupWhatsApp(SignupHarness):
 		self.assertEqual(r.result[0], 1)
 		self.assertNotIn("mobile_no", r.created)
 		self.assertEqual(r.created["wtf_whatsapp_opt_in"], 0)
+		r.queue.assert_not_called()
+
+	def test_mobile_race_on_insert_retries_once_without_the_number(self):
+		r = self.run_signup(
+			"riya@example.com",
+			"Riya",
+			"/lms/courses/sports-nutrition",
+			mobile_no="9876543210",
+			whatsapp_opt_in="1",
+			mobile_race=True,
+		)
+		self.assertEqual(r.result[0], 1)
+		self.assertEqual(len(r.attempts), 2)
+		self.assertEqual(r.attempts[0]["mobile_no"], PHONE)
+		self.assertNotIn("mobile_no", r.attempts[1])
+		self.assertEqual(r.attempts[1]["wtf_whatsapp_opt_in"], 0)
+		r.db.rollback.assert_called_once()
 		r.queue.assert_not_called()
 
 	def test_whatsapp_failure_never_breaks_signup(self):
