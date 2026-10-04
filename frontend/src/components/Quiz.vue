@@ -9,10 +9,17 @@
 		v-else-if="quizAccessDenied"
 		class="border rounded-md text-center py-20 px-4"
 	>
-		<div class="text-ink-gray-8">
+		<div v-if="quizLockedForMember" class="text-ink-gray-8">
+			{{ __('Complete the earlier lessons to unlock this quiz.') }}
+		</div>
+		<div v-else class="text-ink-gray-8">
 			{{ __('Enrol in this course to take this quiz') }}
 		</div>
-		<a :href="safeUrl(enrolUrl)" class="inline-block mt-2">
+		<a
+			v-if="!quizLockedForMember"
+			:href="safeUrl(enrolUrl)"
+			class="inline-block mt-2"
+		>
 			<Button variant="solid">
 				<span>
 					{{ __('View course') }}
@@ -1090,6 +1097,13 @@ const quiz = createResource({
 		populateQuestions()
 		setupTimer()
 	},
+	onError(error) {
+		// Refused: ask the course page's own endpoint whether this learner is
+		// enrolled, to tell "enrol first" apart from "locked by lesson order".
+		if (error?.exc_type === 'PermissionError' && courseFromUrl()) {
+			courseDetails.fetch()
+		}
+	},
 })
 
 // A learner who is neither enrolled nor on a free preview lesson is refused the
@@ -1100,10 +1114,27 @@ const quizAccessDenied = computed(
 
 // The block is mounted outside the router (EditorJS), so read the course from the
 // lesson URL: /lms/courses/<course>/learn/<n-n>.
-const enrolUrl = computed(() => {
-	const match = window.location.pathname.match(/^(.*\/courses\/[^/]+)/)
-	return match ? match[1] : '/lms/courses'
+const courseUrlMatch = () =>
+	window.location.pathname.match(/^(.*\/courses\/([^/]+))/)
+
+const courseFromUrl = () => {
+	const match = courseUrlMatch()
+	return match ? decodeURIComponent(match[2]) : null
+}
+
+const enrolUrl = computed(() => courseUrlMatch()?.[1] || '/lms/courses')
+
+const courseDetails = createResource({
+	url: 'lms.lms.utils.get_course_details',
+	makeParams() {
+		return { course: courseFromUrl() }
+	},
 })
+
+// An enrolled learner refused a quiz is on a lesson the course's order still locks.
+const quizLockedForMember = computed(
+	() => quizAccessDenied.value && !!courseDetails.data?.membership
+)
 
 const populateQuestions = () => {
 	const data = quiz.data

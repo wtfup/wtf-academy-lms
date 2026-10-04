@@ -12,6 +12,8 @@ const resourceState = vi.hoisted(() => ({
 	response: null as any,
 	// When set, get_quiz_with_questions rejects with this, as frappe-ui does.
 	error: null as any,
+	// What get_course_details answers; `membership` is set for an enrolled learner.
+	courseDetails: {} as any,
 }))
 
 // Copied verbatim from frappe-ui 1.0.0-beta.29 `src/components/Button/Button.vue` so the stub reproduces the real state classes the pager relies on.
@@ -48,6 +50,11 @@ vi.mock('frappe-ui', async () => {
 			resource.loading = true
 			const params = options.makeParams?.()
 			resourceState.request(options.url, params)
+
+			if (options.url === 'lms.lms.utils.get_course_details') {
+				await Promise.resolve()
+				resource.data = structuredClone(resourceState.courseDetails)
+			}
 
 			if (options.url === 'lms.lms.utils.get_quiz_with_questions') {
 				// Match a real network response: let the remounted component finish setup before the cached resource's original callbacks run.
@@ -161,7 +168,7 @@ if (typeof globalThis.localStorage?.clear !== 'function') {
 // `String.format` is supplied by Frappe in the browser runtime.
 String.prototype.format = function (...args: unknown[]) {
 	return this.replace(/\{(\d+)\}/g, (_match: string, index: number) =>
-		String(args[index]),
+		String(args[index])
 	)
 }
 
@@ -206,6 +213,7 @@ beforeEach(() => {
 	resourceState.submits.length = 0
 	resourceState.response = quizResponse()
 	resourceState.error = null
+	resourceState.courseDetails = {}
 	localStorage.clear()
 })
 
@@ -217,7 +225,7 @@ describe('Quiz remount', () => {
 		expect(first.text()).toContain('1 question')
 		expect(first.text()).toContain('Start')
 		expect(first.text()).not.toContain(
-			'This quiz has no questions available yet.',
+			'This quiz has no questions available yet.'
 		)
 		expect(resourceState.request).toHaveBeenCalledTimes(1)
 		first.unmount()
@@ -233,7 +241,7 @@ describe('Quiz remount', () => {
 		expect(second.text()).toContain('1 question')
 		expect(second.text()).toContain('Start')
 		expect(second.text()).not.toContain(
-			'This quiz has no questions available yet.',
+			'This quiz has no questions available yet.'
 		)
 
 		const start = second
@@ -275,7 +283,7 @@ const choicesQuizResponse = (count: number) => ({
 				is_correct_1: 1,
 				option_2: `Second option ${index + 1}`,
 			},
-		]),
+		])
 	),
 })
 
@@ -307,7 +315,7 @@ describe('Quiz in an author preview', () => {
 			await flushPromises()
 
 			expect(resourceState.submits).not.toContain(
-				'lms.lms.doctype.lms_quiz.lms_quiz.submit_quiz',
+				'lms.lms.doctype.lms_quiz.lms_quiz.submit_quiz'
 			)
 			wrapper.unmount()
 		} finally {
@@ -327,7 +335,7 @@ describe('Quiz the learner may not take', () => {
 		window.history.pushState(
 			{},
 			'',
-			'/lms/courses/certified-personal-trainer/learn/2-1',
+			'/lms/courses/certified-personal-trainer/learn/2-1'
 		)
 	})
 
@@ -338,9 +346,31 @@ describe('Quiz the learner may not take', () => {
 
 		expect(wrapper.text()).toContain('Enrol in this course to take this quiz')
 		const link = wrapper.find(
-			'a[href="/lms/courses/certified-personal-trainer"]',
+			'a[href="/lms/courses/certified-personal-trainer"]'
 		)
 		expect(link.exists()).toBe(true)
+		wrapper.unmount()
+	})
+
+	it('tells an enrolled learner to finish the earlier lessons instead', async () => {
+		resourceState.error = permissionError()
+		resourceState.courseDetails = {
+			name: 'certified-personal-trainer',
+			membership: { name: 'ENR-1' },
+		}
+		const wrapper = mountQuiz()
+		await flushPromises()
+
+		expect(resourceState.request).toHaveBeenCalledWith(
+			'lms.lms.utils.get_course_details',
+			{ course: 'certified-personal-trainer' }
+		)
+		expect(wrapper.text()).toContain(
+			'Complete the earlier lessons to unlock this quiz.'
+		)
+		expect(wrapper.text()).not.toContain(
+			'Enrol in this course to take this quiz'
+		)
 		wrapper.unmount()
 	})
 
@@ -352,7 +382,7 @@ describe('Quiz the learner may not take', () => {
 		await flushPromises()
 
 		expect(wrapper.text()).not.toContain(
-			'Enrol in this course to take this quiz',
+			'Enrol in this course to take this quiz'
 		)
 		wrapper.unmount()
 	})
