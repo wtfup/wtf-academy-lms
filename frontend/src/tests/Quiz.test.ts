@@ -10,6 +10,8 @@ const resourceState = vi.hoisted(() => ({
 	// Every resource submit, by url. `request` only records reads.
 	submits: [] as string[],
 	response: null as any,
+	// When set, get_quiz_with_questions rejects with this, as frappe-ui does.
+	error: null as any,
 }))
 
 // Copied verbatim from frappe-ui 1.0.0-beta.29 `src/components/Button/Button.vue` so the stub reproduces the real state classes the pager relies on.
@@ -51,6 +53,13 @@ vi.mock('frappe-ui', async () => {
 				// Match a real network response: let the remounted component finish setup before the cached resource's original callbacks run.
 				await Promise.resolve()
 
+				if (resourceState.error) {
+					resource.error = resourceState.error
+					options.onError?.(resourceState.error)
+					resource.loading = false
+					return null
+				}
+
 				const raw = structuredClone(resourceState.response)
 				const transformed = options.transform?.(raw)
 				resource.data = transformed == null ? raw : transformed
@@ -64,6 +73,7 @@ vi.mock('frappe-ui', async () => {
 		resource = reactive({
 			auto: options.auto,
 			data: null,
+			error: null,
 			loading: false,
 			reload,
 			fetch: reload,
@@ -132,10 +142,26 @@ vi.mock('@/utils/format', () => ({
 
 vi.stubGlobal('__', (value: string) => value)
 
+// Node 25+ ships a global `localStorage` that is undefined without
+// --localstorage-file and shadows jsdom's, so this suite never ran locally on it.
+if (typeof globalThis.localStorage?.clear !== 'function') {
+	const store = new Map<string, string>()
+	vi.stubGlobal('localStorage', {
+		getItem: (key: string) => (store.has(key) ? store.get(key)! : null),
+		setItem: (key: string, value: string) => store.set(key, String(value)),
+		removeItem: (key: string) => store.delete(key),
+		clear: () => store.clear(),
+		key: (index: number) => [...store.keys()][index] ?? null,
+		get length() {
+			return store.size
+		},
+	})
+}
+
 // `String.format` is supplied by Frappe in the browser runtime.
 String.prototype.format = function (...args: unknown[]) {
 	return this.replace(/\{(\d+)\}/g, (_match: string, index: number) =>
-		String(args[index])
+		String(args[index]),
 	)
 }
 
@@ -179,6 +205,7 @@ beforeEach(() => {
 	resourceState.request.mockReset()
 	resourceState.submits.length = 0
 	resourceState.response = quizResponse()
+	resourceState.error = null
 	localStorage.clear()
 })
 
@@ -190,7 +217,7 @@ describe('Quiz remount', () => {
 		expect(first.text()).toContain('1 question')
 		expect(first.text()).toContain('Start')
 		expect(first.text()).not.toContain(
-			'This quiz has no questions available yet.'
+			'This quiz has no questions available yet.',
 		)
 		expect(resourceState.request).toHaveBeenCalledTimes(1)
 		first.unmount()
@@ -206,7 +233,7 @@ describe('Quiz remount', () => {
 		expect(second.text()).toContain('1 question')
 		expect(second.text()).toContain('Start')
 		expect(second.text()).not.toContain(
-			'This quiz has no questions available yet.'
+			'This quiz has no questions available yet.',
 		)
 
 		const start = second
@@ -248,7 +275,7 @@ const choicesQuizResponse = (count: number) => ({
 				is_correct_1: 1,
 				option_2: `Second option ${index + 1}`,
 			},
-		])
+		]),
 	),
 })
 
@@ -280,11 +307,63 @@ describe('Quiz in an author preview', () => {
 			await flushPromises()
 
 			expect(resourceState.submits).not.toContain(
-				'lms.lms.doctype.lms_quiz.lms_quiz.submit_quiz'
+				'lms.lms.doctype.lms_quiz.lms_quiz.submit_quiz',
 			)
 			wrapper.unmount()
 		} finally {
 			vi.useRealTimers()
 		}
+	})
+})
+
+describe('Quiz the learner may not take', () => {
+	const permissionError = () =>
+		Object.assign(new Error('You are not authorized to view this quiz.'), {
+			exc_type: 'PermissionError',
+			messages: ['You are not authorized to view this quiz.'],
+		})
+
+	beforeEach(() => {
+		window.history.pushState(
+			{},
+			'',
+			'/lms/courses/certified-personal-trainer/learn/2-1',
+		)
+	})
+
+	it('explains that enrolment is needed and links to the course page', async () => {
+		resourceState.error = permissionError()
+		const wrapper = mountQuiz()
+		await flushPromises()
+
+		expect(wrapper.text()).toContain('Enrol in this course to take this quiz')
+		const link = wrapper.find(
+			'a[href="/lms/courses/certified-personal-trainer"]',
+		)
+		expect(link.exists()).toBe(true)
+		wrapper.unmount()
+	})
+
+	it('says nothing about enrolment for any other failure', async () => {
+		resourceState.error = Object.assign(new Error('Server error'), {
+			exc_type: 'ValidationError',
+		})
+		const wrapper = mountQuiz()
+		await flushPromises()
+
+		expect(wrapper.text()).not.toContain(
+			'Enrol in this course to take this quiz',
+		)
+		wrapper.unmount()
+	})
+
+	it('falls back to the course catalogue outside a course page', async () => {
+		window.history.pushState({}, '', '/lms/quizzes/QUIZ-1')
+		resourceState.error = permissionError()
+		const wrapper = mountQuiz()
+		await flushPromises()
+
+		expect(wrapper.find('a[href="/lms/courses"]').exists()).toBe(true)
+		wrapper.unmount()
 	})
 })
