@@ -78,6 +78,7 @@ after_migrate = [
 	"lms.sqlite.build_index_in_background",
 	"lms.lms.doctype.lms_payment.lms_payment.add_unique_payment_id_constraint",
 	"lms.lms.docperm_shadow.warn_about_shadowed_permlevels",
+	"lms.lms.web_form_guard.check_override_precedence",
 ]
 
 # Desk Notifications
