@@ -266,6 +266,8 @@ def send_template(user_or_phone, template, params, button_param=None, key=None, 
 			return "skipped_no_opt_in"
 
 		k = dedupe_key(template, user, target, key)
+		# may call WA Studio (cache miss): done before the row lock below is taken
+		approved = is_template_approved(template)
 		existing = frappe.db.get_value(
 			DOCTYPE, {"dedupe_key": k}, ["name", "status"], as_dict=True, for_update=True
 		)
@@ -279,7 +281,7 @@ def send_template(user_or_phone, template, params, button_param=None, key=None, 
 			"dedupe_key": k,
 			"error": None,
 		}
-		if not is_template_approved(template):
+		if not approved:
 			_write_row(existing, {**row, "status": "skipped_not_approved"})
 			return "skipped_not_approved"
 
