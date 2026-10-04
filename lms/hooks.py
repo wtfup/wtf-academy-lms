@@ -181,6 +181,11 @@ doc_events = {
 	"LMS Program": {"validate": CHILD_ROW_MOVE_GATE},
 	"LMS Program Course": {"validate": CHILD_ROW_MOVE_GATE},
 	"LMS Program Member": {"validate": CHILD_ROW_MOVE_GATE},
+	# WTF: share-your-story (custom DocType from the project's infra/configure_testimonials.py).
+	"Alumni Story": {
+		"validate": "lms.lms.alumni_story.validate",
+		"on_update": "lms.lms.alumni_story.on_update",
+	},
 	"User": {
 		"validate": "lms.lms.user.validate_username_duplicates",
 		"before_insert": "lms.lms.user.add_lms_student_role",
