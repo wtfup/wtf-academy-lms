@@ -148,6 +148,11 @@ doc_events = {
 		"validate": "lms.lms.utils.validate_discussion_reply",
 	},
 	"Notification Log": {"on_change": "lms.lms.utils.publish_notifications"},
+	# Public uploads go to S3 behind the media CDN (no-op unless wtf_media_* is configured).
+	"File": {
+		"after_insert": "lms.wtf_storage.upload_public_file",
+		"on_trash": "lms.wtf_storage.delete_public_file",
+	},
 	# One rule, two entry points: a child row whose stored parent is not the one it is
 	# being saved under answers to the parent it is leaving.
 	#
