@@ -41,8 +41,8 @@ def _live_row(name, category):
 # Shape verified live 2026-10-04 (GET /api/v1/getMessageTemplates?pageSize=300, project token):
 # {"ok": true, "result": [...10 rows...]}, all 8 academy_* + 2 older templates APPROVED.
 LIVE_TEMPLATE_ROWS = [
-	_live_row(name, "MARKETING" if name in wa.MARKETING else "UTILITY") for name in sorted(wa.TEMPLATES)
-] + [_live_row("academy_welcome_legacy", "UTILITY"), _live_row("academy_course_info", "MARKETING")]
+	_live_row(name, "Marketing" if name in wa.MARKETING else "Utility") for name in sorted(wa.TEMPLATES)
+] + [_live_row("academy_welcome_legacy", "Utility"), _live_row("academy_course_info", "Marketing")]
 
 
 class _SiteConf(unittest.TestCase):
@@ -106,6 +106,8 @@ class TestTemplateCatalog(unittest.TestCase):
 		self.assertEqual(
 			wa.MARKETING,
 			{
+				# recategorised UTILITY -> MARKETING by Meta (live sync 2026-10-04)
+				"academy_account_ready_v1",
 				"academy_trial_day1_v1",
 				"academy_trial_day3_v1",
 				"academy_trial_day7_v1",
@@ -115,7 +117,6 @@ class TestTemplateCatalog(unittest.TestCase):
 		self.assertEqual(
 			wa.UTILITY,
 			{
-				"academy_account_ready_v1",
 				"academy_payment_pending_v1",
 				"academy_enrolment_confirmed_v1",
 				"academy_certificate_ready_v1",
@@ -221,7 +222,25 @@ class TestApprovalCheck(_SiteConf):
 		self.assertEqual(len(result), 10)
 		for name in wa.TEMPLATES:
 			self.assertEqual(result[name], "APPROVED", name)
-		self.assertEqual(cache.set_value.call_args.args[1], result)
+		sets = {c.args[0]: c for c in cache.set_value.call_args_list}
+		self.assertEqual(sets[wa.APPROVAL_CACHE_KEY].args[1], result)
+		# the live category of every template is cached alongside, same TTL
+		categories = sets[wa.CATEGORY_CACHE_KEY].args[1]
+		self.assertEqual(sets[wa.CATEGORY_CACHE_KEY].kwargs["expires_in_sec"], 600)
+		self.assertEqual(categories["academy_account_ready_v1"], "MARKETING")
+		self.assertEqual(categories["academy_payment_pending_v1"], "UTILITY")
+		self.assertEqual(categories["academy_welcome_legacy"], "UTILITY")
+
+	def test_categories_come_from_the_cache_or_the_same_fetch(self):
+		cache = MagicMock()
+		cache.get_value.side_effect = lambda key: {"t": "MARKETING"} if key == wa.CATEGORY_CACHE_KEY else None
+		with patch.object(frappe, "cache", cache), patch.object(wa, "template_statuses") as statuses:
+			self.assertEqual(wa.template_categories(), {"t": "MARKETING"})
+		statuses.assert_not_called()
+		cache = MagicMock()
+		cache.get_value.return_value = None
+		with patch.object(frappe, "cache", cache), patch.object(wa, "template_statuses", return_value=None):
+			self.assertIsNone(wa.template_categories())
 
 	def test_empty_list_is_unknown_not_cached_and_logged_once_masked(self):
 		cache = MagicMock()
@@ -270,6 +289,7 @@ class SendHarness(_SiteConf):
 		enrolled=None,
 		paid_since=None,
 		payment_row=None,
+		categories=None,
 		**kwargs,
 	):
 		db = MagicMock()
@@ -301,6 +321,7 @@ class SendHarness(_SiteConf):
 			patch.object(
 				wa, "template_statuses", return_value=self.statuses if statuses is DEFAULT else statuses
 			),
+			patch.object(wa, "template_categories", return_value=categories),
 			patch.object(wa.requests, "post", post),
 			patch("frappe.log_error") as log_error,
 		):
@@ -475,6 +496,48 @@ class TestOptInGating(SendHarness):
 		r = self.send(PHONE, "academy_learning_nudge_v1", ["Riya", "X", "10%"], key="n")
 		self.assertEqual(r.result, "skipped_no_opt_in")
 		r.post.assert_not_called()
+
+	def test_account_ready_is_marketing_now_and_needs_the_opt_in(self):
+		self.user_row.wtf_whatsapp_opt_in = 0
+		r = self.send("riya@example.com", "academy_account_ready_v1", ["Riya", "X"], "x", key="signup")
+		self.assertEqual(r.result, "skipped_no_opt_in")
+		r.post.assert_not_called()
+		r = self.send(PHONE, "academy_account_ready_v1", ["Riya", "X"], "x", key="signup")
+		self.assertEqual(r.result, "skipped_no_opt_in")
+		r.post.assert_not_called()
+
+	def test_a_live_marketing_category_forces_the_opt_in_gate(self):
+		# Meta can recategorise an approved template; the live list wins over the static map
+		self.user_row.wtf_whatsapp_opt_in = 0
+		live = {"academy_payment_pending_v1": "MARKETING"}
+		r = self.send(
+			"riya@example.com", "academy_payment_pending_v1", ["Riya", "X", "₹1"], key="p", categories=live
+		)
+		self.assertEqual(r.result, "skipped_no_opt_in")
+		r.post.assert_not_called()
+		r = self.send(PHONE, "academy_payment_pending_v1", ["Riya", "X", "₹1"], key="p", categories=live)
+		self.assertEqual(r.result, "skipped_no_opt_in")
+
+	def test_live_utility_or_unknown_list_falls_back_to_the_static_map(self):
+		self.user_row.wtf_whatsapp_opt_in = 0
+		for categories in (None, {}, {"academy_payment_pending_v1": "UTILITY"}):
+			r = self.send(
+				"riya@example.com",
+				"academy_payment_pending_v1",
+				["Riya", "X", "₹1"],
+				key="p",
+				categories=categories,
+			)
+			self.assertEqual(r.result, "sent", categories)
+		# a static marketing template is never downgraded by a live "Utility"
+		r = self.send(
+			"riya@example.com",
+			"academy_trial_day1_v1",
+			["Riya", "X"],
+			key="t",
+			categories={"academy_trial_day1_v1": "UTILITY"},
+		)
+		self.assertEqual(r.result, "skipped_no_opt_in")
 
 	def test_utility_does_not_need_the_opt_in(self):
 		self.user_row.wtf_whatsapp_opt_in = 0

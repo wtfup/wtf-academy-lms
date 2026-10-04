@@ -131,7 +131,7 @@ class TestSignupWhatsApp(SignupHarness):
 			"riya@example.com", wa.ACCOUNT_READY, ["Riya", "Sports Nutrition"], "sports-nutrition", "signup"
 		)
 
-	def test_account_ready_is_utility_so_it_goes_without_consent(self):
+	def test_account_ready_is_marketing_so_it_needs_consent(self):
 		r = self.run_signup(
 			"riya@example.com",
 			"Riya",
@@ -139,8 +139,9 @@ class TestSignupWhatsApp(SignupHarness):
 			mobile_no="9876543210",
 			whatsapp_opt_in=None,
 		)
+		self.assertEqual(r.created["mobile_no"], PHONE)
 		self.assertEqual(r.created["wtf_whatsapp_opt_in"], 0)
-		r.queue.assert_called_once()
+		r.queue.assert_not_called()
 
 	def test_opt_in_values(self):
 		for value, expected in (

@@ -8,9 +8,11 @@ Sender
   enqueued or written to the dedupe log), "wastudio_token" (secret, project-bound: no
   channel_number is sent; empty means no-op) and optional "wastudio_url"
   (default https://wastudio.wtflabs.ai).
-- Disabled users get nothing. Utility templates (account, payment, enrolment, certificate) go
-  to any valid number. Marketing templates (trial day 1/3/7, learning nudge) need
-  User.wtf_whatsapp_opt_in = 1 (never a bare phone) and stop after 3 consecutive failed sends.
+- Disabled users get nothing. Utility templates (payment pending, enrolment, certificate) go
+  to any valid number. Marketing templates (account ready, which Meta recategorised, trial day
+  1/3/7, learning nudge) need User.wtf_whatsapp_opt_in = 1 (never a bare phone) and stop after
+  3 consecutive failed sends. A live WA Studio category of Marketing also forces the opt-in
+  gate on a template the static map calls utility; without the live list the map decides.
 - Only a template WA Studio explicitly lists with a non-APPROVED status is skipped (list cached
   10 minutes) and recorded "skipped_not_approved", the only status a later attempt may
   overwrite. An unknown or empty list is never cached and never blocks: the send is attempted
@@ -42,6 +44,7 @@ LANGUAGE = "en"
 APPROVAL_CACHE_KEY = "wtf_whatsapp:template_statuses"
 APPROVAL_TTL = 10 * 60
 EMPTY_LIST_LOGGED_KEY = "wtf_whatsapp:empty_template_list_logged"
+CATEGORY_CACHE_KEY = "wtf_whatsapp:template_categories"
 FETCH_FAILED_KEY = "wtf_whatsapp:template_list_failed"
 FETCH_FAILED_TTL = 60
 FETCH_FAILED_LOGGED_KEY = "wtf_whatsapp:template_list_failed_logged"
@@ -59,8 +62,10 @@ ENROLMENT_CONFIRMED = "academy_enrolment_confirmed_v1"
 LEARNING_NUDGE = "academy_learning_nudge_v1"
 CERTIFICATE_READY = "academy_certificate_ready_v1"
 
-UTILITY = {ACCOUNT_READY, PAYMENT_PENDING, ENROLMENT_CONFIRMED, CERTIFICATE_READY}
-MARKETING = {TRIAL_DAY1, TRIAL_DAY3, TRIAL_DAY7, LEARNING_NUDGE}
+UTILITY = {PAYMENT_PENDING, ENROLMENT_CONFIRMED, CERTIFICATE_READY}
+# academy_account_ready_v1 was submitted as UTILITY; Meta recategorised it to MARKETING
+# (WA Studio sync 2026-10-04: priced as marketing, hit the 131049 per-user marketing cap).
+MARKETING = {ACCOUNT_READY, TRIAL_DAY1, TRIAL_DAY3, TRIAL_DAY7, LEARNING_NUDGE}
 TEMPLATES = UTILITY | MARKETING
 
 
@@ -173,14 +178,20 @@ def template_statuses():
 		)
 		if response.status_code >= 400:
 			return _list_fetch_failed(f"HTTP {response.status_code}")
-		statuses = {}
+		statuses, categories = {}, {}
 		for row in _template_rows(response.json()):
 			if not isinstance(row, dict):
 				continue
 			name = row.get("name") or row.get("elementName")
+			if not name:
+				continue
 			status = str(row.get("status") or "").upper()
-			if name and statuses.get(name) != "APPROVED":
+			if statuses.get(name) != "APPROVED":
 				statuses[name] = status
+			category = str(row.get("category") or "").upper()
+			# any language variant categorised Marketing makes the template marketing
+			if category and categories.get(name) != "MARKETING":
+				categories[name] = category
 	except Exception as e:
 		# exception text can carry the request: type only
 		return _list_fetch_failed(type(e).__name__)
@@ -194,8 +205,29 @@ def template_statuses():
 				message="WA Studio getMessageTemplates parsed to no templates; sending without the approval check.",
 			)
 		return None
+	frappe.cache.set_value(CATEGORY_CACHE_KEY, categories, expires_in_sec=APPROVAL_TTL)
 	frappe.cache.set_value(APPROVAL_CACHE_KEY, statuses, expires_in_sec=APPROVAL_TTL)
 	return statuses
+
+
+def template_categories():
+	"""{template name: "MARKETING" | "UTILITY" | "AUTHENTICATION"} from the same WA Studio list
+	(cached 10 minutes alongside the statuses). None when the list is unavailable."""
+	cached = frappe.cache.get_value(CATEGORY_CACHE_KEY)
+	if cached is not None:
+		return cached
+	if template_statuses() is None:
+		return None
+	return frappe.cache.get_value(CATEGORY_CACHE_KEY)
+
+
+def is_marketing(template):
+	"""Static map, overridden upwards by the live category: Meta can recategorise an approved
+	template to Marketing, and then it must only go to opted-in users. A live "Utility" never
+	downgrades a template the code treats as marketing."""
+	if template in MARKETING:
+		return True
+	return (template_categories() or {}).get(template) == "MARKETING"
 
 
 def _list_fetch_failed(reason):
@@ -376,9 +408,10 @@ def send_template(
 		)
 		if not target:
 			return "skipped_no_phone"
-		if template in MARKETING and not (user and cint(info.get("wtf_whatsapp_opt_in"))):
+		marketing = is_marketing(template)
+		if marketing and not (user and cint(info.get("wtf_whatsapp_opt_in"))):
 			return "skipped_no_opt_in"
-		if template in MARKETING and _failing(user):
+		if marketing and _failing(user):
 			return "skipped_failing"
 		if window_hours and user and _recently_sent(template, user, course, window_hours):
 			return "skipped_recent"
@@ -531,10 +564,11 @@ def signup_fields(mobile_no=None, whatsapp_opt_in=None, redirect_path=None):
 
 
 def queue_account_ready(user, full_name, fields):
-	"""academy_account_ready_v1 (utility) right after signup, when a number and course are known."""
+	"""academy_account_ready_v1 right after signup, when a number, consent and course are known.
+	It is a MARKETING template (Meta recategorised it), so no consent means no message."""
 	try:
 		course = fields.get("wtf_signup_course")
-		if not fields.get("mobile_no") or not course:
+		if not fields.get("mobile_no") or not course or not fields.get("wtf_whatsapp_opt_in"):
 			return
 		queue_template(user, ACCOUNT_READY, [first_name(full_name), course_title(course)], course, "signup")
 	except Exception as e:
