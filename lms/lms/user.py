@@ -97,6 +97,36 @@ def sign_up(email: str, full_name: str, verify_terms: bool, user_category: str):
 		return 2, _("Signup successful. Please ask your administrator to verify your sign-up.")
 
 
+def local_redirect_path(redirect_to: str | None) -> str | None:
+	"""A same-site redirect as path + query + fragment, or None.
+
+	frappe's sanitize_redirect rebuilds even a bare path into an absolute URL from the request URL,
+	which behind Traefik + nginx is http://, and it rewrites a foreign host to /desk instead of
+	refusing it. Callers that hand this back to the site (update_password -> sanitizeRedirect) need
+	a path, so: refuse other hosts, keep only the path part of the same-site URL.
+	"""
+	from urllib.parse import urlsplit, urlunsplit
+
+	from frappe.www.login import sanitize_redirect
+
+	if not redirect_to or not isinstance(redirect_to, str):
+		return None
+	request_host = urlsplit(frappe.local.request.url).hostname
+	original = urlsplit(redirect_to)
+	if original.netloc and (original.hostname or "").lower() != (request_host or "").lower():
+		return None
+	sanitized = sanitize_redirect(redirect_to)
+	if not sanitized:
+		return None
+	parts = urlsplit(sanitized)
+	if (parts.hostname or "").lower() != (request_host or "").lower():
+		return None
+	path = parts.path or "/"
+	if not path.startswith("/") or path.startswith("//") or "\\" in path:
+		return None
+	return urlunsplit(("", "", path, parts.query, parts.fragment))
+
+
 @frappe.whitelist(allow_guest=True, methods=["POST"])  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @rate_limit(limit=SIGNUP_LIMIT_PER_IP_HOUR, seconds=60 * 60)
 def web_sign_up(email: str, full_name: str, redirect_to: str | None = None) -> tuple[int, str]:
@@ -106,8 +136,6 @@ def web_sign_up(email: str, full_name: str, redirect_to: str | None = None) -> t
 	again while new_password is still set; that second save is treated as a password change and
 	mails a brand-new learner "Security Alert: Your password has been changed". Same behaviour
 	here, but the default role is appended before the single insert."""
-	from frappe.www.login import sanitize_redirect
-
 	if is_signup_disabled():
 		frappe.throw(_("Sign Up is disabled"), title=_("Not Allowed"))
 
@@ -141,8 +169,10 @@ def web_sign_up(email: str, full_name: str, redirect_to: str | None = None) -> t
 		user.append_roles(default_role)
 	user.insert()
 
-	if redirect_to:
-		frappe.cache.hset("redirect_after_login", user.name, sanitize_redirect(redirect_to))
+	# stored as a path: the site's update-password page refuses absolute (and http://) URLs
+	redirect_path = local_redirect_path(redirect_to)
+	if redirect_path:
+		frappe.cache.hset("redirect_after_login", user.name, redirect_path)
 
 	if user.flags.email_sent:
 		return 1, _("Please check your email for verification")
