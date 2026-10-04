@@ -13,6 +13,26 @@ CONF = {
 }
 
 
+def _unique_pdf() -> bytes:
+	"""A minimal valid one-page PDF, unique per call (random comment) so content hashes differ.
+	Frappe parses uploaded PDFs with pypdf (pdf_contains_js), so random bytes are rejected."""
+	objs = [
+		b"<< /Type /Catalog /Pages 2 0 R >>",
+		b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 72 72] >>",
+	]
+	out = b"%PDF-1.4\n%" + os.urandom(16).hex().encode() + b"\n"
+	offsets = []
+	for i, body in enumerate(objs, 1):
+		offsets.append(len(out))
+		out += b"%d 0 obj\n" % i + body + b"\nendobj\n"
+	xref = len(out)
+	out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objs) + 1)
+	out += b"".join(b"%010d 00000 n \n" % o for o in offsets)
+	out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs) + 1, xref)
+	return out
+
+
 class TestWtfStorage(IntegrationTestCase):
 	def _file(self, content=b"hello-wtf", name="t.png", private=0, **extra):
 		return frappe.get_doc(
@@ -85,7 +105,7 @@ class TestWtfStorage(IntegrationTestCase):
 	def test_pdf_stays_local_with_no_s3_call(self):
 		s3 = MagicMock()
 		with patch.dict(frappe.conf, CONF), patch("lms.wtf_storage._client", return_value=s3):
-			f = self._file(content=os.urandom(32), name="handout.pdf")
+			f = self._file(content=_unique_pdf(), name="handout.pdf")
 		f.reload()
 		assert f.file_url.startswith("/files/")
 		assert os.path.exists(frappe.get_site_path("public", f.file_url.lstrip("/")))
