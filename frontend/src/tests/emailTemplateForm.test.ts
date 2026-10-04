@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
+import { tr } from './utils/translate'
 import {
 	createMemoryHistory,
 	createRouter,
@@ -9,7 +10,6 @@ import {
 } from 'vue-router'
 import { defineComponent, h, reactive } from 'vue'
 
-const tr = (s: string) => /{\d+}/.test(s) ? ({ format: (...a: unknown[]) => s.replace(/{(\d+)}/g, (_m, i) => String(a[Number(i)])) }) as any : s
 vi.stubGlobal('__', tr)
 vi.mock('@/stores/session', () => ({
 	sessionStore: () => ({ brand: { name: 'WTF Academy' } }),

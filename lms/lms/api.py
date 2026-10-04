@@ -2432,42 +2432,34 @@ def get_progress_distribution(progressList: list):
 	return distribution
 
 
-PWA_DEFAULT_ICON_DIR = "/assets/lms/frontend/manifest/"
+PWA_ICON_DIR = "/assets/lms/frontend/manifest/"
 
 
 def _get_pwa_icons():
-	"""Manifest icons, preferring the site's own branding.
+	"""Manifest icons: fixed, genuinely square WTF Academy PNGs.
 
-	Website Settings' favicon (192x192) and app logo (512x512) are what
-	infra/configure_branding.py uploads, so a branded site installs with its own
-	icon. Each slot falls back to the bundled default independently. Branded
-	icons are declared "any" only: they are not drawn with maskable safe-zone
-	padding, so a maskable declaration would crop them. banner_image stays out,
-	it is a wide banner.
+	Website Settings' favicon and app logo are not a source: the uploaded brand
+	images are not square (512x494 and 192x185), and Chrome installability needs
+	real square 192 and 512 icons. These files are the brand logo centred on a
+	#0D0D0D square with ~12% padding. That is less than the 20% maskable safe
+	zone, so they are declared "any" only; a maskable entry would crop the logo.
+	banner_image is likewise not a source, it is a wide banner.
 	"""
-	favicon = frappe.get_cached_value("Website Settings", None, "favicon")
-	logo = frappe.get_cached_value("Website Settings", None, "app_logo")
-
-	def icon(src, size, purpose="any"):
-		return {"src": src, "sizes": f"{size}x{size}", "type": "image/png", "purpose": purpose}
-
-	icons = []
-	default_192 = f"{PWA_DEFAULT_ICON_DIR}manifest-icon-192.maskable.png"
-	default_512 = f"{PWA_DEFAULT_ICON_DIR}manifest-icon-512.maskable.png"
-
-	icons.append(icon(favicon or default_192, 192))
-	if logo:
-		icons.append(icon(logo, 512))
-	else:
-		icons.append(icon(default_512, 512))
-		icons.append(icon(default_512, 512, "maskable"))
-	return icons
+	return [
+		{
+			"src": f"{PWA_ICON_DIR}wtf-icon-{size}.png",
+			"sizes": f"{size}x{size}",
+			"type": "image/png",
+			"purpose": "any",
+		}
+		for size in (192, 512)
+	]
 
 
 @frappe.whitelist(allow_guest=True)
 def get_pwa_manifest():
 	"""Web app manifest for installing the LMS as a PWA."""
-	title = frappe.db.get_single_value("Website Settings", "app_name") or "Frappe Learning"
+	title = frappe.db.get_single_value("Website Settings", "app_name") or "WTF Academy"
 	route = get_lms_route()
 
 	# `display` was absent, so it defaulted to "browser" and the installed app
@@ -2491,14 +2483,7 @@ def get_pwa_manifest():
 		"orientation": "portrait",
 		"theme_color": "#0D0D0D",
 		"background_color": "#FFFFFF",
-		# Split by purpose rather than the previous combined "maskable any": a
-		# maskable icon is drawn with its edges cropped to the platform's shape,
-		# so reusing one image for both gives a clipped icon wherever the "any"
-		# slot is used. The 512 has been on disk unused.
-		#
-		# Website Settings' banner_image is deliberately NOT a source here. It is
-		# a wide banner, and it was being declared as 192x192, so any site that
-		# set one got a squashed app icon.
+		# See _get_pwa_icons for why these are fixed square files.
 		"icons": _get_pwa_icons(),
 	}
 

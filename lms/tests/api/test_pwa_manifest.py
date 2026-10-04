@@ -1,6 +1,8 @@
 import json
+import os
 
 import frappe
+from PIL import Image
 
 from lms.lms.api import get_pwa_manifest
 from lms.lms.test_helpers import BaseTestUtils
@@ -36,12 +38,21 @@ class TestPWAManifest(BaseTestUtils):
 		sizes = {icon["sizes"] for icon in _manifest()["icons"]}
 		self.assertEqual(sizes, {"192x192", "512x512"})
 
-	def test_separates_maskable_from_any(self):
-		# A single 'maskable any' entry gets cropped wherever 'any' is used.
-		purposes = [icon["purpose"] for icon in _manifest()["icons"]]
-		self.assertIn("any", purposes)
-		self.assertIn("maskable", purposes)
-		self.assertNotIn("maskable any", purposes)
+	def test_declared_sizes_match_the_real_square_pngs(self):
+		for icon in _manifest()["icons"]:
+			declared = tuple(int(n) for n in icon["sizes"].split("x"))
+			self.assertEqual(declared[0], declared[1], "declared size must be square")
+			filename = icon["src"].rsplit("/", 1)[-1]
+			path = os.path.join(
+				frappe.get_app_path("lms"), "..", "frontend", "public", "manifest", filename
+			)
+			with Image.open(path) as img:
+				self.assertEqual(img.size, declared, filename)
+
+	def test_icons_are_the_wtf_icons_not_website_settings_images(self):
+		for icon in _manifest()["icons"]:
+			self.assertRegex(icon["src"], r"^/assets/lms/frontend/manifest/wtf-icon-(192|512)\.png$")
+			self.assertEqual(icon["purpose"], "any")
 
 	def test_banner_image_is_not_used_as_an_icon(self):
 		"""It is a wide banner, and was being declared as a 192x192 square."""
@@ -55,36 +66,11 @@ class TestPWAManifest(BaseTestUtils):
 
 		self.assertNotIn("/files/wide-banner.png", sources)
 
-	def _set_branding(self, **values):
-		for field, value in values.items():
-			original = frappe.db.get_single_value("Website Settings", field)
-			self.addCleanup(frappe.db.set_single_value, "Website Settings", field, original)
-			frappe.db.set_single_value("Website Settings", field, value)
-		frappe.clear_cache()
-
 	def test_description_is_the_academy_one_not_upstream(self):
 		description = _manifest()["description"]
 
 		self.assertEqual(description, "WTF Academy Online: fitness education courses by WTF Gyms.")
 		self.assertNotIn("open source", description)
-
-	def test_icons_come_from_site_branding_when_set(self):
-		self._set_branding(favicon="/files/wtf-fav.png", app_logo="/files/wtf-logo.png")
-
-		icons = {icon["sizes"]: icon for icon in _manifest()["icons"]}
-
-		self.assertEqual(icons["192x192"]["src"], "/files/wtf-fav.png")
-		self.assertEqual(icons["512x512"]["src"], "/files/wtf-logo.png")
-		# Branded icons carry no safe-zone padding, so none may be declared maskable.
-		self.assertNotIn("maskable", [icon["purpose"] for icon in _manifest()["icons"]])
-
-	def test_icons_fall_back_to_bundled_defaults_without_branding(self):
-		self._set_branding(favicon="", app_logo="")
-
-		sources = [icon["src"] for icon in _manifest()["icons"]]
-
-		for src in sources:
-			self.assertTrue(src.startswith("/assets/lms/frontend/manifest/"))
 
 	def test_name_follows_website_settings(self):
 		original = frappe.db.get_single_value("Website Settings", "app_name")

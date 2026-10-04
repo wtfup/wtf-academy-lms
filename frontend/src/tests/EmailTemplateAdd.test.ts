@@ -6,6 +6,7 @@
  * guard (spamming Create inserts once).
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { tr } from './utils/translate'
 import { flushPromises, mount } from '@vue/test-utils'
 import EmailTemplateAdd from '@/components/Settings/EmailTemplate/EmailTemplateAdd.vue'
 
@@ -60,7 +61,6 @@ vi.mock('@/components/Layouts/SettingsLayout.vue', () => ({
 
 vi.mock('@/utils', () => ({ cleanError: (e: unknown) => e }))
 
-const tr = (s: string) => /{\d+}/.test(s) ? ({ format: (...a: unknown[]) => s.replace(/{(\d+)}/g, (_m, i) => String(a[Number(i)])) }) as any : s
 vi.stubGlobal('__', tr)
 vi.mock('@/stores/session', () => ({
 	sessionStore: () => ({ brand: { name: 'WTF Academy' } }),

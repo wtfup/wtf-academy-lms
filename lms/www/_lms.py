@@ -22,7 +22,7 @@ def get_context():
 
 	app_path = frappe.form_dict.get("app_path")
 	favicon = frappe.db.get_single_value("Website Settings", "favicon") or "/assets/lms/frontend/favicon.png"
-	title = frappe.db.get_single_value("Website Settings", "app_name") or "Frappe Learning"
+	title = frappe.db.get_single_value("Website Settings", "app_name") or "WTF Academy"
 
 	context.meta = get_meta(app_path, title, favicon)
 	context.title = title

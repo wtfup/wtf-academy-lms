@@ -241,7 +241,7 @@
 			v-model="showHelpModal"
 			v-model:articles="articles"
 			appName="learning"
-			title="Frappe Learning"
+			:title="brand.name || __('Learning')"
 			:logo="LMSLogo"
 			:afterSkip="(step) => capture('onboarding_step_skipped_' + step)"
 			:afterSkipAll="() => capture('onboarding_steps_skipped')"
@@ -318,7 +318,7 @@ import {
 } from '@/stores/notifications'
 
 const { userResource } = usersStore()
-const { isLoggedIn } = sessionStore()
+const { isLoggedIn, brand } = sessionStore()
 // window.location (not router.fullPath): the SPA router is mounted under /lms, and the
 // redirect must be the real browser path. Reading currentRoute keeps it reactive.
 const authLinks = computed(() => {

@@ -11,6 +11,18 @@ import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { parse } from '@vue/compiler-sfc'
 
+// Manifest icons must be genuinely square at their declared size (Chrome
+// installability); read the PNG IHDR rather than trusting the filename.
+describe('PWA manifest icons', () => {
+	const dir = resolve(__dirname, '../../public/manifest')
+	for (const size of [192, 512]) {
+		it(`wtf-icon-${size}.png is a real ${size}x${size} square`, () => {
+			const buf = readFileSync(join(dir, `wtf-icon-${size}.png`))
+			expect([buf.readUInt32BE(16), buf.readUInt32BE(20)]).toEqual([size, size])
+		})
+	}
+})
+
 const SRC = resolve(__dirname, '..')
 
 const walk = (dir: string): string[] =>
@@ -80,6 +92,13 @@ describe('learner-facing brand copy', () => {
 		]) {
 			expect(read(f), f).not.toContain('Frappe Learning')
 		}
+	})
+
+	it('AppSidebar only keeps the Powered-by credit as Frappe Learning', () => {
+		const lines = read('components/Sidebar/AppSidebar.vue')
+			.split('\n')
+			.filter((l) => l.includes('Frappe Learning'))
+		expect(lines.every((l) => l.includes('Powered by Frappe Learning'))).toBe(true)
 	})
 
 	it('InstallPrompt shows the branding name', async () => {

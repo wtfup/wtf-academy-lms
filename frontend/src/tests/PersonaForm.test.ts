@@ -4,6 +4,7 @@
  * its `complete` and `choose` events directly and observe the side effects.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { tr } from './utils/translate'
 import { flushPromises, mount } from '@vue/test-utils'
 
 const { callMock, captureMock, pushMock } = vi.hoisted(() => ({
@@ -65,9 +66,6 @@ vi.mock('@/components/Persona/PersonaCard.vue', async () => {
 })
 
 import PersonaForm from '@/pages/Forms/PersonaForm.vue'
-
-// Mirrors translate(): a message with {0} returns a { format } object.
-const tr = (s: string) => /{\d+}/.test(s) ? ({ format: (...a: unknown[]) => s.replace(/{(\d+)}/g, (_m, i) => String(a[Number(i)])) }) as any : s
 
 function mountForm() {
 	return mount(PersonaForm, {
