@@ -33,3 +33,4 @@ lms.lms.utils.get_courses
 lms.lms.utils.get_lesson
 lms.lms.utils.get_related_courses
 lms.lms.utils.get_reviews
+lms.lms.web_form_guard.accept

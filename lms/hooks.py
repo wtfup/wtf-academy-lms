@@ -222,6 +222,10 @@ override_whitelisted_methods = {
 	# "frappe.desk.search.get_names_for_mentions": "lms.lms.utils.get_names_for_mentions",
 	# WTF: core sign_up re-saves with new_password set -> false "password changed" alert email
 	"frappe.core.doctype.user.user.sign_up": "lms.lms.user.web_sign_up",
+	# WTF: payments overrides web_form.accept and takes the doctype from the request (guest can insert
+	# any doctype). LMS installs after payments, so this entry wins; see lms/lms/web_form_guard.py.
+	"frappe.website.doctype.web_form.web_form.accept": "lms.lms.web_form_guard.accept",
+	"payments.overrides.payment_webform.accept": "lms.lms.web_form_guard.accept",
 }
 #
 # each overriding function accepts a `data` argument;
