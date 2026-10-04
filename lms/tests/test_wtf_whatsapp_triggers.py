@@ -10,7 +10,7 @@ import frappe
 
 from lms import wtf_whatsapp as wa
 
-CONF = {"wastudio_token": "WA-SECRET-TOKEN"}
+CONF = {"wastudio_token": "WA-SECRET-TOKEN", "wtf_whatsapp_enabled": 1}
 
 
 class _SiteConf(unittest.TestCase):
@@ -122,6 +122,7 @@ class TestEnrolmentConfirmed(_SiteConf):
 			"sports-nutrition",
 			key="PAY-0001",
 			phone="98765 43210",
+			course="sports-nutrition",
 		)
 
 	def test_without_billing_phone_the_users_mobile_is_used(self):
@@ -181,6 +182,7 @@ class TestCertificateReady(_SiteConf):
 			["Riya", "Sports Nutrition"],
 			"courses/sports-nutrition/certification",
 			key="CERT-1",
+			course="sports-nutrition",
 		)
 
 	def test_batch_certificate_links_the_profile_certificates(self):
@@ -190,6 +192,26 @@ class TestCertificateReady(_SiteConf):
 		args = send.call_args.args
 		self.assertEqual(args[2], ["Riya", "June Batch"])
 		self.assertEqual(args[3], "user/riya/certificates")
+
+	def test_batch_certificate_without_username_is_skipped_not_user_none(self):
+		db_values = {
+			("LMS Certificate", "CERT-1", "*"): frappe._dict(
+				name="CERT-1", member="riya@example.com", course=None, batch_name="B-1"
+			),
+			("User", "riya@example.com", "first_name"): "Riya",
+			("User", "riya@example.com", "username"): None,
+			("LMS Batch", "B-1", "title"): "June Batch",
+		}
+		with patch.object(frappe, "db", fake_db(db_values)), patch.object(wa, "send_template") as send:
+			wa.send_certificate_ready("CERT-1")
+		send.assert_not_called()
+
+	def test_kill_switch_off_queues_nothing(self):
+		doc = frappe._dict(name="CERT-1", member="riya@example.com")
+		with patch.dict(frappe.conf, {"wastudio_token": "x"}), patch("frappe.enqueue") as enqueue:
+			wa.on_certificate_insert(doc, "after_insert")
+			wa.queue_enrolment_confirmed("PAY-0001")
+		enqueue.assert_not_called()
 
 	def test_missing_certificate_sends_nothing(self):
 		self._send(None).assert_not_called()

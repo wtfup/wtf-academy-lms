@@ -10,6 +10,7 @@
   "status",
   "user",
   "phone_masked",
+  "course",
   "column_break_wa",
   "dedupe_key",
   "message_id",
@@ -49,6 +50,13 @@
    "read_only": 1
   },
   {
+   "fieldname": "course",
+   "fieldtype": "Data",
+   "label": "Course",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
    "fieldname": "column_break_wa",
    "fieldtype": "Column Break"
   },
@@ -76,7 +84,7 @@
  "in_create": 1,
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-10-04 12:00:00.000000",
+ "modified": "2026-10-04 18:00:00.000000",
  "modified_by": "Administrator",
  "module": "LMS",
  "name": "WTF WhatsApp Message",

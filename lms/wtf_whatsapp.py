@@ -2,15 +2,19 @@
 
 Sender
 - send_template(user_or_phone, template, params, button_param, key, phone=None) is the one
-  place a message leaves. It runs in a worker (queue_template enqueues it on the short queue
-  after commit) or directly inside a scheduler job.
-- site_config: "wastudio_token" (secret, project-bound: no channel_number is sent; empty means
-  no-op) and optional "wastudio_url" (default https://wastudio.wtflabs.ai).
-- Utility templates (account, payment, enrolment, certificate) go to any valid number.
-  Marketing templates (trial day 1/3/7, learning nudge) need User.wtf_whatsapp_opt_in = 1, so
-  they are never sent to a bare phone.
-- Templates that WA Studio does not list as APPROVED are skipped (list cached 10 minutes); the
-  skip is recorded as "skipped_not_approved", the only status a later attempt may overwrite.
+  place a message leaves. It always runs in a worker: request-side triggers use queue_template
+  (short queue, after commit), scheduler jobs use enqueue_send (one long-queue job per recipient).
+- site_config: "wtf_whatsapp_enabled" (kill switch, 1/true/"1"; default OFF: nothing is sent,
+  enqueued or written to the dedupe log), "wastudio_token" (secret, project-bound: no
+  channel_number is sent; empty means no-op) and optional "wastudio_url"
+  (default https://wastudio.wtflabs.ai).
+- Disabled users get nothing. Utility templates (account, payment, enrolment, certificate) go
+  to any valid number. Marketing templates (trial day 1/3/7, learning nudge) need
+  User.wtf_whatsapp_opt_in = 1 (never a bare phone) and stop after 3 consecutive failed sends.
+- Only a template WA Studio explicitly lists with a non-APPROVED status is skipped (list cached
+  10 minutes) and recorded "skipped_not_approved", the only status a later attempt may
+  overwrite. An unknown or empty list is never cached and never blocks: the send is attempted
+  and WA Studio's own rejection is recorded.
 - Idempotent: the dedupe log "WTF WhatsApp Message" has a unique dedupe_key
   "<template>:<user or hashed phone>:<key>". The row is claimed (status "sending") and
   committed BEFORE the HTTP call, under a row lock, so a retried or duplicated job sends at most
@@ -19,8 +23,8 @@ Sender
   phone (91******3210) and an error type or HTTP status, never the token or the raw number.
 
 Triggers: web_sign_up (account ready), update_payment_record (enrolment confirmed),
-LMS Certificate after_insert (certificate ready), hourly payment pending, daily trial day
-1/3/7 and the learning nudge (see the functions below and lms/hooks.py).
+LMS Certificate after_insert (certificate ready), hourly payment pending, and at 10:30 site
+time (cron) trial day 1/3/7 and the learning nudge (see the functions below and lms/hooks.py).
 """
 
 import hashlib
@@ -37,7 +41,11 @@ TIMEOUT = 8
 LANGUAGE = "en"
 APPROVAL_CACHE_KEY = "wtf_whatsapp:template_statuses"
 APPROVAL_TTL = 10 * 60
+EMPTY_LIST_LOGGED_KEY = "wtf_whatsapp:empty_template_list_logged"
 RETRYABLE = {"skipped_not_approved"}
+MAX_KEY = 140
+FAILING_STREAK = 3
+WINDOW_STATUSES = ["sending", "sent", "failed"]
 
 ACCOUNT_READY = "academy_account_ready_v1"
 TRIAL_DAY1 = "academy_trial_day1_v1"
@@ -112,6 +120,16 @@ def _token():
 	return (frappe.conf.get("wastudio_token") or "").strip() or None
 
 
+def whatsapp_enabled():
+	"""Kill switch, site_config "wtf_whatsapp_enabled": 1 / true / "1". Default OFF."""
+	return str(frappe.conf.get("wtf_whatsapp_enabled") or "").strip().lower() in ("1", "true")
+
+
+def _active_token():
+	"""The token when sending is switched on and configured, else None."""
+	return _token() if whatsapp_enabled() else None
+
+
 def _base_url():
 	return ((frappe.conf.get("wastudio_url") or "").strip() or DEFAULT_URL).rstrip("/")
 
@@ -159,13 +177,25 @@ def template_statuses():
 				statuses[name] = status
 	except Exception:
 		return None
+	if not statuses:
+		# Unknown list: never cached, sends go ahead (WA Studio rejects unapproved templates
+		# itself and that failure is recorded). Logged at most once per cache window.
+		if not frappe.cache.get_value(EMPTY_LIST_LOGGED_KEY):
+			frappe.cache.set_value(EMPTY_LIST_LOGGED_KEY, 1, expires_in_sec=APPROVAL_TTL)
+			frappe.log_error(
+				title="WhatsApp template list empty",
+				message="WA Studio getMessageTemplates parsed to no templates; sending without the approval check.",
+			)
+		return None
 	frappe.cache.set_value(APPROVAL_CACHE_KEY, statuses, expires_in_sec=APPROVAL_TTL)
 	return statuses
 
 
-def is_template_approved(template):
-	statuses = template_statuses()
-	return bool(statuses) and statuses.get(template) == "APPROVED"
+def template_blocked(template, statuses):
+	"""Only an explicit non-APPROVED status for this template blocks a send."""
+	if not statuses or template not in statuses:
+		return False
+	return statuses[template] != "APPROVED"
 
 
 # ---------------------------------------------------------------- sender
@@ -181,7 +211,10 @@ def _log(template, phone, reason):
 
 def dedupe_key(template, user, phone, key):
 	recipient = user or "ph-" + hashlib.sha256(phone.encode()).hexdigest()[:16]
-	return f"{template}:{recipient}:{key}"
+	value = f"{template}:{recipient}:{key}"
+	if len(value) > MAX_KEY:
+		value = f"{template}:h:{hashlib.sha256(value.encode()).hexdigest()}"
+	return value
 
 
 def _is_user(user_or_phone):
@@ -244,9 +277,46 @@ def _post(token, phone, template, params, button_param):
 	return "failed", None, error
 
 
-def send_template(user_or_phone, template, params, button_param=None, key=None, phone=None):
-	"""Sends one approved template at most once per (template, recipient, key). Never raises."""
-	token = _token()
+def _failing(user):
+	"""True after FAILING_STREAK consecutive failed sends to this user (opted out / unreachable)."""
+	last = frappe.get_all(
+		DOCTYPE,
+		filters={"user": user, "status": ["in", ["sent", "failed"]]},
+		fields=["status"],
+		order_by="creation desc",
+		limit=FAILING_STREAK,
+	)
+	return len(last) == FAILING_STREAK and all(row.status == "failed" for row in last)
+
+
+def _recently_sent(template, user, course, hours):
+	return frappe.db.exists(
+		DOCTYPE,
+		{
+			"template": template,
+			"user": user,
+			"course": course,
+			"status": ["in", WINDOW_STATUSES],
+			"creation": [">", now_datetime() - timedelta(hours=hours)],
+		},
+	)
+
+
+def send_template(
+	user_or_phone,
+	template,
+	params,
+	button_param=None,
+	key=None,
+	phone=None,
+	course=None,
+	window_hours=None,
+):
+	"""Sends one template at most once per (template, recipient, key). Never raises.
+
+	course is recorded on the log row; with window_hours, nothing is sent if the same template
+	went to this user for this course within that many hours (checkout retries, weekly nudge)."""
+	token = _active_token()
 	if not token:
 		return "disabled"
 	if template not in TEMPLATES:
@@ -255,6 +325,8 @@ def send_template(user_or_phone, template, params, button_param=None, key=None, 
 	try:
 		user = user_or_phone if _is_user(user_or_phone) else None
 		info = (_user_row(user) or frappe._dict()) if user else frappe._dict()
+		if user and not cint(info.get("enabled")):
+			return "skipped_disabled"
 		target = (
 			normalize_phone(phone)
 			or normalize_phone(info.get("mobile_no"))
@@ -264,10 +336,14 @@ def send_template(user_or_phone, template, params, button_param=None, key=None, 
 			return "skipped_no_phone"
 		if template in MARKETING and not (user and cint(info.get("wtf_whatsapp_opt_in"))):
 			return "skipped_no_opt_in"
+		if template in MARKETING and _failing(user):
+			return "skipped_failing"
+		if window_hours and user and _recently_sent(template, user, course, window_hours):
+			return "skipped_recent"
 
 		k = dedupe_key(template, user, target, key)
 		# may call WA Studio (cache miss): done before the row lock below is taken
-		approved = is_template_approved(template)
+		blocked = template_blocked(template, template_statuses())
 		existing = frappe.db.get_value(
 			DOCTYPE, {"dedupe_key": k}, ["name", "status"], as_dict=True, for_update=True
 		)
@@ -279,9 +355,10 @@ def send_template(user_or_phone, template, params, button_param=None, key=None, 
 			"phone_masked": mask_phone(target),
 			"template": template,
 			"dedupe_key": k,
+			"course": course,
 			"error": None,
 		}
-		if not approved:
+		if blocked:
 			_write_row(existing, {**row, "status": "skipped_not_approved"})
 			return "skipped_not_approved"
 
@@ -304,7 +381,7 @@ def send_template(user_or_phone, template, params, button_param=None, key=None, 
 def queue_template(user_or_phone, template, params, button_param=None, key=None, phone=None):
 	"""Request-side entry point: send after the surrounding transaction commits. Never raises."""
 	try:
-		if not _token():
+		if not _active_token():
 			return
 		frappe.enqueue(
 			"lms.wtf_whatsapp.send_template",
@@ -319,6 +396,30 @@ def queue_template(user_or_phone, template, params, button_param=None, key=None,
 		)
 	except Exception as e:
 		_log(template, phone, f"queue failed ({type(e).__name__})")
+
+
+def enqueue_send(
+	user_or_phone, template, params, button_param=None, key=None, phone=None, course=None, window_hours=None
+):
+	"""Scheduler-side: one long-queue job per recipient, so a slow WA Studio cannot time out the
+	selecting job. Never raises."""
+	try:
+		if not _active_token():
+			return
+		frappe.enqueue(
+			"lms.wtf_whatsapp.send_template",
+			queue="long",
+			user_or_phone=user_or_phone,
+			template=template,
+			params=params,
+			button_param=button_param,
+			key=key,
+			phone=phone,
+			course=course,
+			window_hours=window_hours,
+		)
+	except Exception as e:
+		_log(template, phone, f"enqueue failed ({type(e).__name__})")
 
 
 # ---------------------------------------------------------------- helpers shared by triggers
@@ -393,7 +494,7 @@ def queue_account_ready(user, full_name, fields):
 def _enqueue(method, **kwargs):
 	"""Request-side: run a send job after commit on the short queue. Never raises."""
 	try:
-		if not _token():
+		if not _active_token():
 			return
 		frappe.enqueue(f"lms.wtf_whatsapp.{method}", queue="short", enqueue_after_commit=True, **kwargs)
 	except Exception as e:
@@ -451,6 +552,7 @@ def send_enrolment_confirmed(payment_name):
 		course,
 		key=row.name,
 		phone=billing_phone(row),
+		course=course,
 	)
 
 
@@ -473,26 +575,37 @@ def send_certificate_ready(certificate):
 		# /lms/courses/<course>/certification shows the learner their certificate card
 		button = f"courses/{cert.course}/certification"
 	elif cert.batch_name:
+		username = frappe.db.get_value("User", cert.member, "username")
+		if not username:
+			return
 		title = frappe.db.get_value("LMS Batch", cert.batch_name, "title") or cert.batch_name
-		button = f"user/{frappe.db.get_value('User', cert.member, 'username')}/certificates"
+		button = f"user/{username}/certificates"
 	else:
 		return
 	send_template(
-		cert.member, CERTIFICATE_READY, [user_first_name(cert.member), title], button, key=cert.name
+		cert.member,
+		CERTIFICATE_READY,
+		[user_first_name(cert.member), title],
+		button,
+		key=cert.name,
+		course=cert.course or None,
 	)
 
 
 # ---------------------------------------------------------------- scheduler jobs
 #
+# Every job is a no-op while the kill switch is off. Jobs only SELECT recipients and enqueue one
+# long-queue send per recipient (enqueue_send), so a slow WA Studio cannot time out the loop.
 # Each job may run late, twice or not at all on a given tick; the dedupe log is what makes a
-# message go out once. Windows are chosen so a late run still finds its rows:
-# - payment pending (hourly): any unpaid course checkout created 1 to 24 hours ago, key = the
-#   payment, so the first run after the 1-hour mark sends and later runs dedupe.
-# - trial day N (daily): users whose signup falls on the calendar day today - N, key "trial"
-#   (the template differs per day). A run later the same day selects the same users and
-#   dedupes; a day with no run is not backfilled (no stale "yesterday" message on day 9).
-# - learning nudge (daily): key "<course>:<today>", plus no nudge for that course in the last
-#   7 days, so a learner idle for weeks hears from us at most once a week.
+# message go out once:
+# - payment pending (hourly): the latest unpaid course checkout created 1 to 24 hours ago per
+#   (learner, course), skipped once any LMS Enrollment exists. At send time a 24 h
+#   (learner, course) window stops a checkout retry from repeating the message.
+# - trial day N (cron 10:30 site time): users whose signup falls on the calendar day today - N,
+#   key "trial" (the template differs per day). A rerun the same day selects the same users and
+#   dedupes; a day with no run is not backfilled (no stale message on day 9).
+# - learning nudge (cron 10:30): key "<course>:<today>" plus a 7-day (learner, course) window
+#   at send time, so a learner idle for weeks hears from us at most once a week.
 
 
 def _each(rows, fn, label):
@@ -503,8 +616,13 @@ def _each(rows, fn, label):
 			_log(label, None, f"{row.get('name')}: {type(e).__name__}")
 
 
+PAYMENT_PENDING_WINDOW_HOURS = 24
+
+
 def send_payment_pending(now=None):
-	"""Hourly: academy_payment_pending_v1 once per unpaid course checkout (latest per learner+course)."""
+	"""Hourly: academy_payment_pending_v1 for the latest open course checkout per learner+course."""
+	if not whatsapp_enabled():
+		return
 	now = now or now_datetime()
 	rows = frappe.get_all(
 		"LMS Payment",
@@ -526,24 +644,19 @@ def send_payment_pending(now=None):
 			latest.append(row)
 
 	def send(row):
-		if frappe.db.exists(
-			"LMS Payment",
-			{
-				"member": row.member,
-				"payment_received": 1,
-				"payment_for_document_type": "LMS Course",
-				"payment_for_document": row.payment_for_document,
-			},
-		):
-			return
 		course = row.payment_for_document
-		send_template(
+		# enrolled already: paid (this or another checkout), free, coupon or admin
+		if frappe.db.exists("LMS Enrollment", {"member": row.member, "course": course}):
+			return
+		enqueue_send(
 			row.member,
 			PAYMENT_PENDING,
 			[user_first_name(row.member), course_title(course), format_inr(payment_total(row))],
 			course,
-			key=row.name,
+			key=f"{course}:{row.name}",
 			phone=billing_phone(row),
+			course=course,
+			window_hours=PAYMENT_PENDING_WINDOW_HOURS,
 		)
 
 	_each(latest, send, PAYMENT_PENDING)
@@ -573,7 +686,9 @@ def course_price(course):
 
 
 def send_trial_reminders(today=None):
-	"""Daily: trial day 1/3/7 to opted-in learners with no paid enrolment (marketing)."""
+	"""Cron 10:30: trial day 1/3/7 to opted-in learners with no paid enrolment (marketing)."""
+	if not whatsapp_enabled():
+		return
 	today = getdate(today or nowdate())
 	for days, template in TRIAL_DAYS:
 		start = add_days(today, -days)
@@ -601,7 +716,7 @@ def send_trial_reminders(today=None):
 				if not price:
 					return
 				params.append(price)
-			send_template(user.name, template, params, course, key="trial")
+			enqueue_send(user.name, template, params, course, key="trial", course=course)
 
 		_each(users, send, template)
 
@@ -611,7 +726,9 @@ NUDGE_EVERY_DAYS = 7
 
 
 def send_learning_nudges(now=None):
-	"""Daily: paid, opted-in learner with no lesson progress for 5 days (at most once per 7 days)."""
+	"""Cron 10:30: paid, opted-in learner with no lesson progress for 5 days (at most weekly)."""
+	if not whatsapp_enabled():
+		return
 	now = now or now_datetime()
 	today = getdate(now)
 	idle_since = now - timedelta(days=NUDGE_IDLE_DAYS)
@@ -649,23 +766,14 @@ def send_learning_nudges(now=None):
 		)
 		if last and last > idle_since:
 			return
-		if frappe.db.exists(
-			DOCTYPE,
-			{
-				"template": LEARNING_NUDGE,
-				"user": row.member,
-				"dedupe_key": ["like", f"{LEARNING_NUDGE}:{row.member}:{row.course}:%"],
-				"status": ["in", ["sending", "sent", "failed"]],
-				"creation": [">", now - timedelta(days=NUDGE_EVERY_DAYS)],
-			},
-		):
-			return
-		send_template(
+		enqueue_send(
 			row.member,
 			LEARNING_NUDGE,
 			[user_first_name(row.member), course_title(row.course), f"{round(flt(row.progress))}%"],
 			row.course,
 			key=f"{row.course}:{today}",
+			course=row.course,
+			window_hours=NUDGE_EVERY_DAYS * 24,
 		)
 
 	_each(enrollments, send, LEARNING_NUDGE)

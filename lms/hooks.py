@@ -210,10 +210,15 @@ scheduler_events = {
 		"lms.lms.doctype.lms_live_class.lms_live_class.send_live_class_reminder",
 		"lms.lms.doctype.lms_course.lms_course.send_notification_for_published_courses",
 		"lms.lms.doctype.course_lesson.course_lesson.rename_settled_untitled_lessons",
-		# WTF: WhatsApp trial day 1/3/7 and learning nudge, opt-in only (lms/wtf_whatsapp.py)
-		"lms.wtf_whatsapp.send_trial_reminders",
-		"lms.wtf_whatsapp.send_learning_nudges",
 	],
+	"cron": {
+		# WTF: WhatsApp trial day 1/3/7 and learning nudge, opt-in only, at 10:30 site time
+		# (never at midnight); each enqueues one long-queue send per recipient (lms/wtf_whatsapp.py).
+		"30 10 * * *": [
+			"lms.wtf_whatsapp.send_trial_reminders",
+			"lms.wtf_whatsapp.send_learning_nudges",
+		],
+	},
 }
 
 fixtures = ["Custom Field", "Function", "Industry", "LMS Category"]

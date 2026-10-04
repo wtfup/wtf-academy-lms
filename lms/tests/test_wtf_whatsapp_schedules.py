@@ -60,7 +60,8 @@ class _Patches:
 		for p in (
 			patch.object(frappe, "db", self.site.db),
 			patch.object(frappe, "get_all", self.site.get_all),
-			patch.object(wa, "send_template", self.send),
+			patch.object(wa, "enqueue_send", self.send),
+			patch.object(wa, "whatsapp_enabled", return_value=True),
 			patch("frappe.log_error"),
 		):
 			p.start()
@@ -97,10 +98,10 @@ class TestPaymentPending(unittest.TestCase):
 		}
 		return [frappe._dict({**base, **row}) for row in rows]
 
-	def run_job(self, rows, paid=()):
+	def run_job(self, rows, enrolled=()):
 		def exists(doctype, filters):
-			if doctype == "LMS Payment" and filters.get("payment_received") == 1:
-				return (filters["member"], filters["payment_for_document"]) in paid
+			if doctype == "LMS Enrollment":
+				return (filters["member"], filters["course"]) in enrolled
 			return None
 
 		values = dict(TITLES)
@@ -136,8 +137,10 @@ class TestPaymentPending(unittest.TestCase):
 			wa.PAYMENT_PENDING,
 			["Riya", "Sports Nutrition", "₹9,999"],
 			"sports-nutrition",
-			key="PAY-2",
+			key="sports-nutrition:PAY-2",
 			phone=None,
+			course="sports-nutrition",
+			window_hours=24,
 		)
 
 	def test_only_the_latest_open_checkout_per_learner_and_course(self):
@@ -147,14 +150,18 @@ class TestPaymentPending(unittest.TestCase):
 			{"name": "PAY-1", "member": "riya@example.com", "payment_for_document": "cpt"},
 		)
 		_, send = self.run_job(rows)
-		self.assertEqual([c.kwargs["key"] for c in send.call_args_list], ["PAY-3", "PAY-1"])
+		self.assertEqual(
+			[c.kwargs["key"] for c in send.call_args_list], ["sports-nutrition:PAY-3", "cpt:PAY-1"]
+		)
+		# checkout retries share one 24 h (member, course) window at send time
+		self.assertEqual({c.kwargs["window_hours"] for c in send.call_args_list}, {24})
 
-	def test_skips_learners_who_paid_for_the_course_since(self):
+	def test_skips_learners_already_enrolled_paid_free_coupon_or_admin(self):
 		rows = self.payments(
 			{"name": "PAY-2", "member": "riya@example.com", "payment_for_document": "sports-nutrition"},
 			{"name": "PAY-4", "member": "aman@example.com", "payment_for_document": "sports-nutrition"},
 		)
-		_, send = self.run_job(rows, paid={("riya@example.com", "sports-nutrition")})
+		_, send = self.run_job(rows, enrolled={("riya@example.com", "sports-nutrition")})
 		self.assertEqual([c.args[0] for c in send.call_args_list], ["aman@example.com"])
 
 	def test_one_bad_row_does_not_stop_the_job(self):
@@ -230,6 +237,7 @@ class TestTrialReminders(unittest.TestCase):
 			],
 		)
 		self.assertEqual({c.kwargs["key"] for c in send.call_args_list}, {"trial"})
+		self.assertEqual([c.kwargs["course"] for c in send.call_args_list], ["sports-nutrition", "cpt"])
 
 	def test_falls_back_to_the_signup_course(self):
 		users = {
@@ -274,9 +282,7 @@ class TestTrialReminders(unittest.TestCase):
 
 
 class TestLearningNudges(unittest.TestCase):
-	def run_job(
-		self, enrollments, last_progress=None, paid=(), recently_nudged=(), opted=("riya@example.com",)
-	):
+	def run_job(self, enrollments, last_progress=None, paid=(), opted=("riya@example.com",)):
 		last_progress = last_progress or {}
 
 		def users(filters):
@@ -285,8 +291,6 @@ class TestLearningNudges(unittest.TestCase):
 		def exists(doctype, filters):
 			if doctype == "LMS Payment":
 				return (filters["member"], filters["payment_for_document"]) in paid
-			if doctype == wa.DOCTYPE:
-				return filters["user"] in recently_nudged
 			return None
 
 		def progress(name):
@@ -342,6 +346,8 @@ class TestLearningNudges(unittest.TestCase):
 			["Riya", "Sports Nutrition", "40%"],
 			"sports-nutrition",
 			key="sports-nutrition:2026-10-10",
+			course="sports-nutrition",
+			window_hours=7 * 24,
 		)
 
 	def test_recent_progress_means_no_nudge(self):
@@ -365,20 +371,9 @@ class TestLearningNudges(unittest.TestCase):
 		)
 		send.assert_called_once()
 
-	def test_at_most_once_per_seven_days(self):
-		_, send = self.run_job([self.enrollment()], recently_nudged={"riya@example.com"})
-		send.assert_not_called()
-
-	def test_recent_nudge_lookup_is_scoped_to_course_and_window(self):
-		site, _ = self.run_job([self.enrollment()])
-		calls = [c for c in site.db.exists.call_args_list if c.args[0] == wa.DOCTYPE]
-		filters = calls[0].args[1]
-		self.assertEqual(filters["template"], wa.LEARNING_NUDGE)
-		self.assertEqual(
-			filters["dedupe_key"], ["like", f"{wa.LEARNING_NUDGE}:riya@example.com:sports-nutrition:%"]
-		)
-		self.assertEqual(filters["creation"], [">", NOW - timedelta(days=7)])
-		self.assertEqual(filters["status"], ["in", ["sending", "sent", "failed"]])
+	def test_at_most_once_per_seven_days_is_enforced_at_send_time(self):
+		_, send = self.run_job([self.enrollment()])
+		self.assertEqual(send.call_args.kwargs["window_hours"], 168)
 
 
 class TestSchedulerHooks(unittest.TestCase):
@@ -386,8 +381,36 @@ class TestSchedulerHooks(unittest.TestCase):
 		from lms import hooks
 
 		self.assertIn("lms.wtf_whatsapp.send_payment_pending", hooks.scheduler_events["hourly"])
-		self.assertIn("lms.wtf_whatsapp.send_trial_reminders", hooks.scheduler_events["daily"])
-		self.assertIn("lms.wtf_whatsapp.send_learning_nudges", hooks.scheduler_events["daily"])
+		# 10:30 site time, never at midnight
+		cron = hooks.scheduler_events["cron"]["30 10 * * *"]
+		self.assertIn("lms.wtf_whatsapp.send_trial_reminders", cron)
+		self.assertIn("lms.wtf_whatsapp.send_learning_nudges", cron)
+		for job in ("lms.wtf_whatsapp.send_trial_reminders", "lms.wtf_whatsapp.send_learning_nudges"):
+			self.assertNotIn(job, hooks.scheduler_events["daily"])
+
+
+class TestJobsKillSwitch(unittest.TestCase):
+	def setUp(self):
+		self._own_conf = not getattr(frappe.local, "conf", None)
+		if self._own_conf:
+			frappe.local.conf = frappe._dict()
+
+	def tearDown(self):
+		if self._own_conf:
+			del frappe.local.conf
+
+	def test_jobs_do_nothing_when_off(self):
+		get_all = MagicMock(return_value=[])
+		with (
+			patch.dict(frappe.conf, {"wastudio_token": "x"}),
+			patch.object(frappe, "get_all", get_all),
+			patch.object(wa, "enqueue_send") as send,
+		):
+			wa.send_payment_pending(now=NOW)
+			wa.send_trial_reminders(today=date(2026, 10, 10))
+			wa.send_learning_nudges(now=NOW)
+		get_all.assert_not_called()
+		send.assert_not_called()
 
 
 if __name__ == "__main__":

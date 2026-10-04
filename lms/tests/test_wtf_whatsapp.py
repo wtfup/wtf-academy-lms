@@ -17,9 +17,32 @@ import frappe
 from lms import wtf_whatsapp as wa
 
 TOKEN = "WA-SECRET-TOKEN"
-CONF = {"wastudio_token": TOKEN, "wastudio_url": "https://wa.example"}
+CONF = {"wastudio_token": TOKEN, "wastudio_url": "https://wa.example", "wtf_whatsapp_enabled": 1}
+DEFAULT = object()
+FIXED_NOW = datetime(2026, 10, 10, 9, 30)
 PHONE = "919876543210"
 ALL_APPROVED = {name: "APPROVED" for name in wa.TEMPLATES}
+
+
+def _live_row(name, category):
+	return {
+		"name": name,
+		"status": "APPROVED",
+		"category": category,
+		"waba_id": "1613713363552381",
+		"phone_number_id": "100000000000001",
+		"language": "en",
+		"buttons": [
+			{"type": "URL", "text": "Open", "url": "https://online.wtfgymsacademy.com/lms/courses/{{1}}"}
+		],
+	}
+
+
+# Shape verified live 2026-10-04 (GET /api/v1/getMessageTemplates?pageSize=300, project token):
+# {"ok": true, "result": [...10 rows...]}, all 8 academy_* + 2 older templates APPROVED.
+LIVE_TEMPLATE_ROWS = [
+	_live_row(name, "MARKETING" if name in wa.MARKETING else "UTILITY") for name in sorted(wa.TEMPLATES)
+] + [_live_row("academy_welcome_legacy", "UTILITY"), _live_row("academy_course_info", "MARKETING")]
 
 
 class _SiteConf(unittest.TestCase):
@@ -148,6 +171,33 @@ class TestApprovalCheck(_SiteConf):
 		self.assertIsNone(result)
 		cache.set_value.assert_not_called()
 
+	def test_parses_the_live_project_token_response(self):
+		result, cache, _ = self._statuses(LIVE_TEMPLATE_ROWS)
+		self.assertEqual(len(result), 10)
+		for name in wa.TEMPLATES:
+			self.assertEqual(result[name], "APPROVED", name)
+		self.assertEqual(cache.set_value.call_args.args[1], result)
+
+	def test_empty_list_is_unknown_not_cached_and_logged_once_masked(self):
+		cache = MagicMock()
+		cache.get_value.return_value = None
+		response = MagicMock(status_code=200)
+		response.json.return_value = {"ok": True, "result": []}
+		with (
+			patch.dict(frappe.conf, CONF),
+			patch.object(frappe, "cache", cache),
+			patch.object(wa.requests, "get", MagicMock(return_value=response)),
+			patch("frappe.log_error") as log_error,
+		):
+			self.assertIsNone(wa.template_statuses())
+			# the "already logged" marker is now set: a second empty fetch does not log again
+			cache.get_value.side_effect = lambda key: 1 if key == wa.EMPTY_LIST_LOGGED_KEY else None
+			self.assertIsNone(wa.template_statuses())
+		self.assertEqual(log_error.call_count, 1)
+		self.assertNotIn(TOKEN, repr(log_error.call_args))
+		cached = [c for c in cache.set_value.call_args_list if c.args[0] == wa.APPROVAL_CACHE_KEY]
+		self.assertEqual(cached, [])
+
 
 class SendHarness(_SiteConf):
 	"""Runs send_template with a mocked frappe.db / requests and records what happened."""
@@ -162,8 +212,21 @@ class SendHarness(_SiteConf):
 			first_name="Riya Sharma", mobile_no=PHONE, wtf_whatsapp_opt_in=1, enabled=1
 		)
 
-	def send(self, *args, post=None, existing=None, statuses=None, insert_error=None, conf=None, **kwargs):
+	def send(
+		self,
+		*args,
+		post=None,
+		existing=None,
+		statuses=DEFAULT,
+		insert_error=None,
+		conf=None,
+		history=(),
+		recent=None,
+		**kwargs,
+	):
 		db = MagicMock()
+		db.exists.return_value = recent
+		get_all = MagicMock(return_value=[frappe._dict(status=s) for s in history])
 
 		def get_value(doctype, filters=None, fieldname=None, *a, **kw):
 			if doctype == "User":
@@ -183,14 +246,17 @@ class SendHarness(_SiteConf):
 			patch.dict(frappe.conf, conf if conf is not None else CONF),
 			patch.object(frappe, "db", db),
 			patch.object(frappe, "get_doc", get_doc),
+			patch.object(frappe, "get_all", get_all),
 			patch.object(
-				wa, "template_statuses", return_value=statuses if statuses is not None else self.statuses
+				wa, "template_statuses", return_value=self.statuses if statuses is DEFAULT else statuses
 			),
 			patch.object(wa.requests, "post", post),
 			patch("frappe.log_error") as log_error,
 		):
 			result = wa.send_template(*args, **kwargs)
-		return frappe._dict(result=result, db=db, get_doc=get_doc, doc=doc, post=post, log_error=log_error)
+		return frappe._dict(
+			result=result, db=db, get_doc=get_doc, doc=doc, post=post, log_error=log_error, get_all=get_all
+		)
 
 
 class TestSendTemplate(SendHarness):
@@ -255,7 +321,7 @@ class TestSendTemplate(SendHarness):
 			"academy_account_ready_v1",
 			["Riya", "X"],
 			key="k",
-			conf={"wastudio_token": TOKEN},
+			conf={"wastudio_token": TOKEN, "wtf_whatsapp_enabled": "1"},
 		)
 		self.assertEqual(r.post.call_args.args[0], "https://wastudio.wtflabs.ai/api/v1/sendTemplateMessage")
 
@@ -380,12 +446,22 @@ class TestNotApproved(SendHarness):
 		row = r.get_doc.call_args.args[0]
 		self.assertEqual(row["status"], "skipped_not_approved")
 
-	def test_unknown_list_counts_as_not_approved(self):
-		with patch.object(wa, "template_statuses", return_value=None):
-			self.assertFalse(wa.is_template_approved("academy_account_ready_v1"))
-		with patch.object(wa, "template_statuses", return_value={"academy_account_ready_v1": "APPROVED"}):
-			self.assertTrue(wa.is_template_approved("academy_account_ready_v1"))
-			self.assertFalse(wa.is_template_approved("academy_trial_day1_v1"))
+	def test_unknown_or_empty_list_never_drops_the_send(self):
+		# WA Studio rejects an unapproved template itself; that failure is recorded.
+		for statuses in (None, {}, {"some_other_template": "APPROVED"}):
+			r = self.send(
+				"riya@example.com", "academy_account_ready_v1", ["Riya", "X"], key="s", statuses=statuses
+			)
+			self.assertEqual(r.result, "sent", statuses)
+			r.post.assert_called_once()
+
+	def test_only_an_explicit_non_approved_status_blocks(self):
+		self.assertTrue(wa.template_blocked("t", {"t": "PENDING"}))
+		self.assertTrue(wa.template_blocked("t", {"t": "REJECTED"}))
+		self.assertFalse(wa.template_blocked("t", {"t": "APPROVED"}))
+		self.assertFalse(wa.template_blocked("t", {}))
+		self.assertFalse(wa.template_blocked("t", None))
+		self.assertFalse(wa.template_blocked("t", {"other": "PENDING"}))
 
 
 class TestFailOpen(SendHarness):
@@ -445,6 +521,132 @@ class TestFailOpen(SendHarness):
 		self.assertNotIn(PHONE, repr(log_error.call_args))
 
 
+class TestKillSwitch(SendHarness):
+	def test_off_by_default_does_nothing_and_writes_no_rows(self):
+		for conf in (
+			{"wastudio_token": TOKEN},
+			{"wastudio_token": TOKEN, "wtf_whatsapp_enabled": 0},
+			{"wastudio_token": TOKEN, "wtf_whatsapp_enabled": "0"},
+			{"wastudio_token": TOKEN, "wtf_whatsapp_enabled": "false"},
+			{"wastudio_token": TOKEN, "wtf_whatsapp_enabled": ""},
+		):
+			r = self.send("riya@example.com", "academy_account_ready_v1", ["Riya", "X"], key="s", conf=conf)
+			self.assertEqual(r.result, "disabled", conf)
+			r.post.assert_not_called()
+			r.get_doc.assert_not_called()
+			r.db.set_value.assert_not_called()
+			r.db.get_value.assert_not_called()
+
+	def test_truthy_values_turn_it_on(self):
+		for value in (1, "1", "true", "True", True):
+			with patch.dict(frappe.conf, {"wtf_whatsapp_enabled": value}):
+				self.assertTrue(wa.whatsapp_enabled(), value)
+
+	def test_queue_is_a_noop_when_off(self):
+		with patch.dict(frappe.conf, {"wastudio_token": TOKEN}), patch("frappe.enqueue") as enqueue:
+			wa.queue_template("riya@example.com", "academy_account_ready_v1", ["Riya", "X"], "x", "signup")
+			wa.enqueue_send("riya@example.com", "academy_trial_day1_v1", ["Riya", "X"], "x", "trial")
+		enqueue.assert_not_called()
+
+
+class TestRecipientRules(SendHarness):
+	def test_disabled_users_get_nothing(self):
+		self.user_row.enabled = 0
+		for template in sorted(wa.TEMPLATES):
+			r = self.send("riya@example.com", template, ["Riya", "X", "Y"], key="k")
+			self.assertEqual(r.result, "skipped_disabled", template)
+			r.post.assert_not_called()
+			r.get_doc.assert_not_called()
+
+	def test_marketing_stops_after_three_consecutive_failures(self):
+		r = self.send(
+			"riya@example.com", "academy_trial_day1_v1", ["Riya", "X"], key="trial", history=("failed",) * 3
+		)
+		self.assertEqual(r.result, "skipped_failing")
+		r.post.assert_not_called()
+		filters = r.get_all.call_args.kwargs["filters"]
+		self.assertEqual(filters["user"], "riya@example.com")
+		self.assertEqual(filters["status"], ["in", ["sent", "failed"]])
+		self.assertEqual(r.get_all.call_args.kwargs["order_by"], "creation desc")
+		self.assertEqual(r.get_all.call_args.kwargs["limit"], 3)
+
+	def test_a_success_in_between_resets_the_failure_count(self):
+		r = self.send(
+			"riya@example.com",
+			"academy_trial_day1_v1",
+			["Riya", "X"],
+			key="trial",
+			history=("failed", "sent", "failed"),
+		)
+		self.assertEqual(r.result, "sent")
+		r = self.send(
+			"riya@example.com", "academy_trial_day1_v1", ["Riya", "X"], key="trial", history=("failed",) * 2
+		)
+		self.assertEqual(r.result, "sent")
+
+	def test_utility_is_not_stopped_by_failures(self):
+		r = self.send(
+			"riya@example.com",
+			"academy_enrolment_confirmed_v1",
+			["Riya", "₹1", "X"],
+			key="p",
+			history=("failed",) * 3,
+		)
+		self.assertEqual(r.result, "sent")
+
+	def test_course_is_recorded_on_the_row(self):
+		r = self.send("riya@example.com", "academy_account_ready_v1", ["Riya", "X"], key="s", course="cpt")
+		self.assertEqual(r.get_doc.call_args.args[0]["course"], "cpt")
+
+	def test_window_skips_a_recent_send_for_the_same_course(self):
+		with patch.object(wa, "now_datetime", return_value=FIXED_NOW):
+			r = self.send(
+				"riya@example.com",
+				"academy_payment_pending_v1",
+				["Riya", "X", "₹1"],
+				key="cpt:PAY-2",
+				course="cpt",
+				window_hours=24,
+				recent="WAMSG-0",
+			)
+		self.assertEqual(r.result, "skipped_recent")
+		r.post.assert_not_called()
+		r.get_doc.assert_not_called()
+		filters = r.db.exists.call_args.args[1]
+		self.assertEqual(filters["template"], "academy_payment_pending_v1")
+		self.assertEqual(filters["user"], "riya@example.com")
+		self.assertEqual(filters["course"], "cpt")
+		self.assertEqual(filters["status"], ["in", ["sending", "sent", "failed"]])
+		self.assertEqual(filters["creation"], [">", FIXED_NOW - timedelta(hours=24)])
+
+	def test_window_with_nothing_recent_sends(self):
+		with patch.object(wa, "now_datetime", return_value=FIXED_NOW):
+			r = self.send(
+				"riya@example.com",
+				"academy_payment_pending_v1",
+				["Riya", "X", "₹1"],
+				key="cpt:PAY-2",
+				course="cpt",
+				window_hours=24,
+			)
+		self.assertEqual(r.result, "sent")
+
+
+class TestDedupeKey(unittest.TestCase):
+	def test_short_keys_are_kept_readable(self):
+		self.assertEqual(wa.dedupe_key("t", "a@b.co", None, "k"), "t:a@b.co:k")
+
+	def test_long_keys_are_hashed_below_the_column_limit(self):
+		user = "x" * 200 + "@example.com"
+		key = wa.dedupe_key("academy_learning_nudge_v1", user, None, "c" * 140 + ":2026-10-10")
+		self.assertLessEqual(len(key), 140)
+		self.assertTrue(key.startswith("academy_learning_nudge_v1:"))
+		self.assertEqual(
+			key, wa.dedupe_key("academy_learning_nudge_v1", user, None, "c" * 140 + ":2026-10-10")
+		)
+		self.assertNotEqual(key, wa.dedupe_key("academy_learning_nudge_v1", user, None, "d" * 140))
+
+
 class TestQueueTemplate(_SiteConf):
 	def test_enqueues_on_short_after_commit(self):
 		with patch.dict(frappe.conf, CONF), patch("frappe.enqueue") as enqueue:
@@ -474,6 +676,34 @@ class TestQueueTemplate(_SiteConf):
 		log_error.assert_called_once()
 
 
+class TestEnqueueSend(_SiteConf):
+	def test_scheduled_sends_go_one_job_per_recipient_on_the_long_queue(self):
+		with patch.dict(frappe.conf, CONF), patch("frappe.enqueue") as enqueue:
+			wa.enqueue_send(
+				"riya@example.com",
+				"academy_trial_day1_v1",
+				["Riya", "X"],
+				"x",
+				"trial",
+				course="x",
+				window_hours=None,
+			)
+		args, kwargs = enqueue.call_args
+		self.assertEqual(args[0], "lms.wtf_whatsapp.send_template")
+		self.assertEqual(kwargs["queue"], "long")
+		self.assertEqual(kwargs["template"], "academy_trial_day1_v1")
+		self.assertEqual(kwargs["key"], "trial")
+		self.assertEqual(kwargs["course"], "x")
+
+	def test_enqueue_failure_is_swallowed(self):
+		with (
+			patch.dict(frappe.conf, CONF),
+			patch("frappe.enqueue", side_effect=Exception("redis down")),
+			patch("frappe.log_error"),
+		):
+			wa.enqueue_send("riya@example.com", "academy_trial_day1_v1", ["Riya", "X"], "x", "trial")
+
+
 class TestShippedSchema(unittest.TestCase):
 	def _app(self):
 		import lms
@@ -488,7 +718,16 @@ class TestShippedSchema(unittest.TestCase):
 			meta = json.load(f)
 		self.assertEqual(meta["name"], wa.DOCTYPE)
 		fields = {f["fieldname"]: f for f in meta["fields"]}
-		for name in ("user", "phone_masked", "template", "dedupe_key", "status", "message_id", "error"):
+		for name in (
+			"user",
+			"phone_masked",
+			"template",
+			"dedupe_key",
+			"status",
+			"message_id",
+			"error",
+			"course",
+		):
 			self.assertIn(name, fields)
 		self.assertEqual(fields["dedupe_key"].get("unique"), 1)
 		self.assertEqual(
