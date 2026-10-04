@@ -42,6 +42,9 @@ LANGUAGE = "en"
 APPROVAL_CACHE_KEY = "wtf_whatsapp:template_statuses"
 APPROVAL_TTL = 10 * 60
 EMPTY_LIST_LOGGED_KEY = "wtf_whatsapp:empty_template_list_logged"
+FETCH_FAILED_KEY = "wtf_whatsapp:template_list_failed"
+FETCH_FAILED_TTL = 60
+FETCH_FAILED_LOGGED_KEY = "wtf_whatsapp:template_list_failed_logged"
 RETRYABLE = {"skipped_not_approved"}
 MAX_KEY = 140
 FAILING_STREAK = 3
@@ -155,6 +158,9 @@ def template_statuses():
 	cached = frappe.cache.get_value(APPROVAL_CACHE_KEY)
 	if cached is not None:
 		return cached
+	if frappe.cache.get_value(FETCH_FAILED_KEY):
+		# WA Studio failed under a minute ago: don't make every queued send wait on another GET
+		return None
 	token = _token()
 	if not token:
 		return None
@@ -166,7 +172,7 @@ def template_statuses():
 			timeout=TIMEOUT,
 		)
 		if response.status_code >= 400:
-			return None
+			return _list_fetch_failed(f"HTTP {response.status_code}")
 		statuses = {}
 		for row in _template_rows(response.json()):
 			if not isinstance(row, dict):
@@ -175,8 +181,9 @@ def template_statuses():
 			status = str(row.get("status") or "").upper()
 			if name and statuses.get(name) != "APPROVED":
 				statuses[name] = status
-	except Exception:
-		return None
+	except Exception as e:
+		# exception text can carry the request: type only
+		return _list_fetch_failed(type(e).__name__)
 	if not statuses:
 		# Unknown list: never cached, sends go ahead (WA Studio rejects unapproved templates
 		# itself and that failure is recorded). Logged at most once per cache window.
@@ -189,6 +196,19 @@ def template_statuses():
 		return None
 	frappe.cache.set_value(APPROVAL_CACHE_KEY, statuses, expires_in_sec=APPROVAL_TTL)
 	return statuses
+
+
+def _list_fetch_failed(reason):
+	"""Negative-cache a failed template list for 60 s and log it at most once per 10 minutes.
+	Returns None: an unknown list never blocks a send."""
+	frappe.cache.set_value(FETCH_FAILED_KEY, 1, expires_in_sec=FETCH_FAILED_TTL)
+	if not frappe.cache.get_value(FETCH_FAILED_LOGGED_KEY):
+		frappe.cache.set_value(FETCH_FAILED_LOGGED_KEY, 1, expires_in_sec=APPROVAL_TTL)
+		frappe.log_error(
+			title="WhatsApp template list unavailable",
+			message=f"WA Studio getMessageTemplates failed ({reason}); sending without the approval check.",
+		)
+	return None
 
 
 def template_blocked(template, statuses):
@@ -302,6 +322,25 @@ def _recently_sent(template, user, course, hours):
 	)
 
 
+def _still_pending(payment_name):
+	row = frappe.db.get_value(
+		"LMS Payment", payment_name, ["payment_received", "member", "payment_for_document"], as_dict=True
+	)
+	if not row or cint(row.payment_received):
+		return False
+	if frappe.db.exists("LMS Enrollment", {"member": row.member, "course": row.payment_for_document}):
+		return False
+	return not frappe.db.exists(
+		"LMS Payment",
+		{
+			"member": row.member,
+			"payment_received": 1,
+			"payment_for_document_type": "LMS Course",
+			"payment_for_document": row.payment_for_document,
+		},
+	)
+
+
 def send_template(
 	user_or_phone,
 	template,
@@ -311,11 +350,14 @@ def send_template(
 	phone=None,
 	course=None,
 	window_hours=None,
+	pending_payment=None,
 ):
 	"""Sends one template at most once per (template, recipient, key). Never raises.
 
 	course is recorded on the log row; with window_hours, nothing is sent if the same template
-	went to this user for this course within that many hours (checkout retries, weekly nudge)."""
+	went to this user for this course within that many hours (checkout retries, weekly nudge).
+	pending_payment (payment pending only) is re-checked here, in the worker: if it was paid, or
+	the learner is enrolled or paid for the course another way meanwhile, nothing is sent."""
 	token = _active_token()
 	if not token:
 		return "disabled"
@@ -340,6 +382,8 @@ def send_template(
 			return "skipped_failing"
 		if window_hours and user and _recently_sent(template, user, course, window_hours):
 			return "skipped_recent"
+		if pending_payment and not _still_pending(pending_payment):
+			return "skipped_resolved"
 
 		k = dedupe_key(template, user, target, key)
 		# may call WA Studio (cache miss): done before the row lock below is taken
@@ -399,7 +443,15 @@ def queue_template(user_or_phone, template, params, button_param=None, key=None,
 
 
 def enqueue_send(
-	user_or_phone, template, params, button_param=None, key=None, phone=None, course=None, window_hours=None
+	user_or_phone,
+	template,
+	params,
+	button_param=None,
+	key=None,
+	phone=None,
+	course=None,
+	window_hours=None,
+	pending_payment=None,
 ):
 	"""Scheduler-side: one long-queue job per recipient, so a slow WA Studio cannot time out the
 	selecting job. Never raises."""
@@ -417,6 +469,7 @@ def enqueue_send(
 			phone=phone,
 			course=course,
 			window_hours=window_hours,
+			pending_payment=pending_payment,
 		)
 	except Exception as e:
 		_log(template, phone, f"enqueue failed ({type(e).__name__})")
@@ -657,6 +710,8 @@ def send_payment_pending(now=None):
 			phone=billing_phone(row),
 			course=course,
 			window_hours=PAYMENT_PENDING_WINDOW_HOURS,
+			# re-checked by the worker: the learner may pay while this job waits in the queue
+			pending_payment=row.name,
 		)
 
 	_each(latest, send, PAYMENT_PENDING)

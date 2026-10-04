@@ -167,9 +167,54 @@ class TestApprovalCheck(_SiteConf):
 		self.assertEqual(result["academy_account_ready_v1"], "APPROVED")
 
 	def test_list_failure_is_unknown_and_not_cached(self):
-		result, cache, _ = self._statuses([], status_code=500)
+		with patch("frappe.log_error"):
+			result, cache, _ = self._statuses([], status_code=500)
 		self.assertIsNone(result)
-		cache.set_value.assert_not_called()
+		cached = [c for c in cache.set_value.call_args_list if c.args[0] == wa.APPROVAL_CACHE_KEY]
+		self.assertEqual(cached, [])
+
+	def _failing_fetch(self, get, markers=()):
+		cache = MagicMock()
+		cache.get_value.side_effect = lambda key: 1 if key in markers else None
+		with (
+			patch.dict(frappe.conf, CONF),
+			patch.object(frappe, "cache", cache),
+			patch.object(wa.requests, "get", get),
+			patch("frappe.log_error") as log_error,
+		):
+			result = wa.template_statuses()
+		return result, cache, log_error
+
+	def test_fetch_failure_is_negative_cached_for_a_minute_and_logged_masked(self):
+		for get in (
+			MagicMock(return_value=MagicMock(status_code=503)),
+			MagicMock(side_effect=wa.requests.exceptions.Timeout(f"timeout {TOKEN}")),
+		):
+			result, cache, log_error = self._failing_fetch(get)
+			self.assertIsNone(result)
+			get.assert_called_once()
+			sets = {c.args[0]: c.kwargs.get("expires_in_sec") for c in cache.set_value.call_args_list}
+			self.assertEqual(sets.get(wa.FETCH_FAILED_KEY), 60)
+			self.assertEqual(sets.get(wa.FETCH_FAILED_LOGGED_KEY), 600)
+			self.assertNotIn(wa.APPROVAL_CACHE_KEY, sets)
+			log_error.assert_called_once()
+			self.assertNotIn(TOKEN, repr(log_error.call_args))
+
+	def test_during_the_negative_cache_there_is_no_refetch(self):
+		get = MagicMock()
+		result, _, log_error = self._failing_fetch(get, markers=(wa.FETCH_FAILED_KEY,))
+		self.assertIsNone(result)
+		get.assert_not_called()
+		log_error.assert_not_called()
+
+	def test_failure_log_is_once_per_ten_minutes(self):
+		get = MagicMock(return_value=MagicMock(status_code=500))
+		_, _, log_error = self._failing_fetch(get, markers=(wa.FETCH_FAILED_LOGGED_KEY,))
+		get.assert_called_once()
+		log_error.assert_not_called()
+
+	def test_a_failed_list_still_attempts_the_send(self):
+		self.assertFalse(wa.template_blocked("academy_account_ready_v1", None))
 
 	def test_parses_the_live_project_token_response(self):
 		result, cache, _ = self._statuses(LIVE_TEMPLATE_ROWS)
@@ -222,10 +267,14 @@ class SendHarness(_SiteConf):
 		conf=None,
 		history=(),
 		recent=None,
+		enrolled=None,
+		paid_since=None,
+		payment_row=None,
 		**kwargs,
 	):
 		db = MagicMock()
-		db.exists.return_value = recent
+		answers = {wa.DOCTYPE: recent, "LMS Enrollment": enrolled, "LMS Payment": paid_since}
+		db.exists.side_effect = lambda doctype, filters=None, *a, **kw: answers.get(doctype)
 		get_all = MagicMock(return_value=[frappe._dict(status=s) for s in history])
 
 		def get_value(doctype, filters=None, fieldname=None, *a, **kw):
@@ -233,6 +282,8 @@ class SendHarness(_SiteConf):
 				return self.user_row
 			if doctype == wa.DOCTYPE:
 				return existing
+			if doctype == "LMS Payment":
+				return payment_row
 			return None
 
 		db.get_value.side_effect = get_value
@@ -630,6 +681,46 @@ class TestRecipientRules(SendHarness):
 				window_hours=24,
 			)
 		self.assertEqual(r.result, "sent")
+
+
+class TestPendingPaymentRecheck(SendHarness):
+	"""The long-queue worker re-checks a payment-pending send: the learner may pay meanwhile."""
+
+	def pending(self, **kwargs):
+		return self.send(
+			"riya@example.com",
+			"academy_payment_pending_v1",
+			["Riya", "CPT", "₹1"],
+			"cpt",
+			key="cpt:PAY-2",
+			course="cpt",
+			window_hours=24,
+			pending_payment="PAY-2",
+			**kwargs,
+		)
+
+	def unpaid(self, **overrides):
+		row = {"payment_received": 0, "member": "riya@example.com", "payment_for_document": "cpt"}
+		row.update(overrides)
+		return frappe._dict(row)
+
+	def test_still_unpaid_and_not_enrolled_is_sent(self):
+		with patch.object(wa, "now_datetime", return_value=FIXED_NOW):
+			r = self.pending(payment_row=self.unpaid())
+		self.assertEqual(r.result, "sent")
+
+	def test_paid_while_queued_is_not_sent(self):
+		with patch.object(wa, "now_datetime", return_value=FIXED_NOW):
+			for kwargs in (
+				{"payment_row": self.unpaid(payment_received=1)},
+				{"payment_row": self.unpaid(), "paid_since": "PAY-3"},
+				{"payment_row": self.unpaid(), "enrolled": "ENR-1"},
+				{"payment_row": None},
+			):
+				r = self.pending(**kwargs)
+				self.assertEqual(r.result, "skipped_resolved", kwargs)
+				r.post.assert_not_called()
+				r.get_doc.assert_not_called()
 
 
 class TestDedupeKey(unittest.TestCase):

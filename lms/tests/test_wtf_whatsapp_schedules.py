@@ -141,6 +141,7 @@ class TestPaymentPending(unittest.TestCase):
 			phone=None,
 			course="sports-nutrition",
 			window_hours=24,
+			pending_payment="PAY-2",
 		)
 
 	def test_only_the_latest_open_checkout_per_learner_and_course(self):
