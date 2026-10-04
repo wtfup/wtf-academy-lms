@@ -151,6 +151,7 @@ doc_events = {
 	# Public uploads go to S3 behind the media CDN (no-op unless wtf_media_* is configured).
 	"File": {
 		"after_insert": "lms.wtf_storage.upload_public_file",
+		"on_update": "lms.wtf_storage.make_cdn_file_private",
 		"on_trash": "lms.wtf_storage.delete_public_file",
 	},
 	# One rule, two entry points: a child row whose stored parent is not the one it is
