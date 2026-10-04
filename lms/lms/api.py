@@ -2432,6 +2432,38 @@ def get_progress_distribution(progressList: list):
 	return distribution
 
 
+PWA_DEFAULT_ICON_DIR = "/assets/lms/frontend/manifest/"
+
+
+def _get_pwa_icons():
+	"""Manifest icons, preferring the site's own branding.
+
+	Website Settings' favicon (192x192) and app logo (512x512) are what
+	infra/configure_branding.py uploads, so a branded site installs with its own
+	icon. Each slot falls back to the bundled default independently. Branded
+	icons are declared "any" only: they are not drawn with maskable safe-zone
+	padding, so a maskable declaration would crop them. banner_image stays out,
+	it is a wide banner.
+	"""
+	favicon = frappe.get_cached_value("Website Settings", None, "favicon")
+	logo = frappe.get_cached_value("Website Settings", None, "app_logo")
+
+	def icon(src, size, purpose="any"):
+		return {"src": src, "sizes": f"{size}x{size}", "type": "image/png", "purpose": purpose}
+
+	icons = []
+	default_192 = f"{PWA_DEFAULT_ICON_DIR}manifest-icon-192.maskable.png"
+	default_512 = f"{PWA_DEFAULT_ICON_DIR}manifest-icon-512.maskable.png"
+
+	icons.append(icon(favicon or default_192, 192))
+	if logo:
+		icons.append(icon(logo, 512))
+	else:
+		icons.append(icon(default_512, 512))
+		icons.append(icon(default_512, 512, "maskable"))
+	return icons
+
+
 @frappe.whitelist(allow_guest=True)
 def get_pwa_manifest():
 	"""Web app manifest for installing the LMS as a PWA."""
@@ -2452,12 +2484,12 @@ def get_pwa_manifest():
 		"id": route,
 		"name": title,
 		"short_name": title,
-		"description": "Easy to use, 100% open source Learning Management System",
+		"description": "WTF Academy Online: fitness education courses by WTF Gyms.",
 		"start_url": route,
 		"scope": route,
 		"display": "standalone",
 		"orientation": "portrait",
-		"theme_color": "#FFFFFF",
+		"theme_color": "#0D0D0D",
 		"background_color": "#FFFFFF",
 		# Split by purpose rather than the previous combined "maskable any": a
 		# maskable icon is drawn with its edges cropped to the platform's shape,
@@ -2467,26 +2499,7 @@ def get_pwa_manifest():
 		# Website Settings' banner_image is deliberately NOT a source here. It is
 		# a wide banner, and it was being declared as 192x192, so any site that
 		# set one got a squashed app icon.
-		"icons": [
-			{
-				"src": "/assets/lms/frontend/manifest/manifest-icon-192.maskable.png",
-				"sizes": "192x192",
-				"type": "image/png",
-				"purpose": "any",
-			},
-			{
-				"src": "/assets/lms/frontend/manifest/manifest-icon-512.maskable.png",
-				"sizes": "512x512",
-				"type": "image/png",
-				"purpose": "any",
-			},
-			{
-				"src": "/assets/lms/frontend/manifest/manifest-icon-512.maskable.png",
-				"sizes": "512x512",
-				"type": "image/png",
-				"purpose": "maskable",
-			},
-		],
+		"icons": _get_pwa_icons(),
 	}
 
 	return Response(json.dumps(manifest), status=200, content_type="application/manifest+json")

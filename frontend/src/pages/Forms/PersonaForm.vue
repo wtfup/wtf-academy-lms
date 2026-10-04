@@ -33,6 +33,7 @@ import { sessionStore } from '@/stores/session'
 const user = inject('$user')
 const router = useRouter()
 const { brand } = sessionStore()
+const brandName = computed(() => brand.name || __('this platform'))
 const { capture } = useTelemetry()
 
 const leaving = ref(false)
@@ -49,7 +50,7 @@ const steps = computed(() => [
 	{
 		key: 'discovery_source',
 		type: 'tags',
-		title: __('How did you hear about Frappe Learning?'),
+		title: __('How did you hear about {0}?').format(brandName.value),
 		subtitle: PERSONALISE_HINT,
 		options: [
 			{
@@ -77,7 +78,7 @@ const steps = computed(() => [
 	{
 		key: 'usage_context',
 		type: 'tags',
-		title: __('Where will you be using Frappe Learning?'),
+		title: __('Where will you be using {0}?').format(brandName.value),
 		subtitle: PERSONALISE_HINT,
 		options: [
 			{ label: __('School'), value: 'School' },

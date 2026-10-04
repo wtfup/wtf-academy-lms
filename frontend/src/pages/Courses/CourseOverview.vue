@@ -4,7 +4,7 @@
 		<div
 			class="flex flex-col md:flex-row items-start justify-between w-full gap-x-8 gap-y-8"
 		>
-			<div class="md:w-2/3 space-y-10 min-w-0">
+			<div class="w-full md:w-2/3 space-y-10 min-w-0">
 				<section class="space-y-4">
 					<h1 class="text-4xl-semibold text-ink-gray-9">
 						{{ course.data.title }}

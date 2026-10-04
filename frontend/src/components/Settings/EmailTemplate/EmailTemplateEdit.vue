@@ -72,9 +72,10 @@ import {
 	createListResource,
 	toast,
 } from 'frappe-ui'
-import { reactive, ref, useId } from 'vue'
+import { computed, reactive, ref, useId } from 'vue'
 import { InputLabel } from '@/components/Form/labeling'
 import { cleanError } from '@/utils'
+import { sessionStore } from '@/stores/session'
 import type { EmailTemplate, EmailTemplateStep } from '@/types'
 import RichTextEditor from '@/components/RichTextEditor.vue'
 
@@ -104,11 +105,18 @@ const template = reactive({
 	response_html: props.templateData?.response_html || '',
 })
 
-const htmlPlaceholder = __(
-	'<p>Dear {{ member_name }},</p>\n\n<p>You have been enrolled in our upcoming batch {{ batch_name }}.</p>\n\n<p>Thanks,</p>\n<p>Frappe Learning</p>'
+const { brand } = sessionStore()
+const signOff = computed(() => brand.name || __('The team'))
+
+const htmlPlaceholder = computed(() =>
+	__(
+		'<p>Dear {{ member_name }},</p>\n\n<p>You have been enrolled in our upcoming batch {{ batch_name }}.</p>\n\n<p>Thanks,</p>\n<p>{0}</p>'
+	).format(signOff.value)
 )
-const richPlaceholder = __(
-	'Dear {{ member_name }},\n\nYou have been enrolled in our upcoming batch {{ batch_name }}.\n\nThanks,\nFrappe Learning'
+const richPlaceholder = computed(() =>
+	__(
+		'Dear {{ member_name }},\n\nYou have been enrolled in our upcoming batch {{ batch_name }}.\n\nThanks,\n{0}'
+	).format(signOff.value)
 )
 
 const templates = createListResource({

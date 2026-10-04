@@ -23,7 +23,7 @@ vi.mock('vue-router', () => ({
 	useRouter: () => ({ push: pushMock }),
 }))
 vi.mock('@/stores/session', () => ({
-	sessionStore: () => ({ brand: { favicon: '' } }),
+	sessionStore: () => ({ brand: { favicon: '', name: 'WTF Academy' } }),
 }))
 
 // Stub PersonaCard: expose its emits so tests can trigger the wiring. The
@@ -66,17 +66,20 @@ vi.mock('@/components/Persona/PersonaCard.vue', async () => {
 
 import PersonaForm from '@/pages/Forms/PersonaForm.vue'
 
+// Mirrors translate(): a message with {0} returns a { format } object.
+const tr = (s: string) => /{\d+}/.test(s) ? ({ format: (...a: unknown[]) => s.replace(/{(\d+)}/g, (_m, i) => String(a[Number(i)])) }) as any : s
+
 function mountForm() {
 	return mount(PersonaForm, {
 		global: {
 			provide: { $user: { data: { sitename: 'test.site' } } },
-			mocks: { __: (s: string) => s },
+			mocks: { __: tr },
 		},
 	})
 }
 
 beforeEach(() => {
-	;(window as any).__ = (s: string) => s
+	;(window as any).__ = tr
 	callMock.mockClear()
 	captureMock.mockClear()
 	pushMock.mockClear()
@@ -84,6 +87,13 @@ beforeEach(() => {
 })
 
 describe('PersonaForm', () => {
+	it('names the site brand in its questions, never Frappe Learning', () => {
+		const steps = mountForm().findComponent({ name: 'PersonaCard' }).props('steps')
+		const titles = steps.map((s: any) => String(s.title))
+		expect(titles[0]).toBe('How did you hear about WTF Academy?')
+		expect(titles[1]).toBe('Where will you be using WTF Academy?')
+	})
+
 	it('builds all three steps with the expected keys/types', () => {
 		const wrapper = mountForm()
 		const steps = wrapper.findComponent({ name: 'PersonaCard' }).props('steps')

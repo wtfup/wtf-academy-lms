@@ -60,12 +60,16 @@ vi.mock('@/components/Layouts/SettingsLayout.vue', () => ({
 
 vi.mock('@/utils', () => ({ cleanError: (e: unknown) => e }))
 
-vi.stubGlobal('__', (s: string) => s)
+const tr = (s: string) => /{\d+}/.test(s) ? ({ format: (...a: unknown[]) => s.replace(/{(\d+)}/g, (_m, i) => String(a[Number(i)])) }) as any : s
+vi.stubGlobal('__', tr)
+vi.mock('@/stores/session', () => ({
+	sessionStore: () => ({ brand: { name: 'WTF Academy' } }),
+}))
 
 const mountAdd = (props: Record<string, unknown> = {}) =>
 	mount(EmailTemplateAdd, {
 		props,
-		global: { mocks: { __: (s: string) => s } },
+		global: { mocks: { __: tr } },
 	})
 
 const setField = async (w: any, label: string, value: string) =>

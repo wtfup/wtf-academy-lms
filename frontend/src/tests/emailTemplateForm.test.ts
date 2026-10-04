@@ -9,7 +9,11 @@ import {
 } from 'vue-router'
 import { defineComponent, h, reactive } from 'vue'
 
-vi.stubGlobal('__', (text: string) => text)
+const tr = (s: string) => /{\d+}/.test(s) ? ({ format: (...a: unknown[]) => s.replace(/{(\d+)}/g, (_m, i) => String(a[Number(i)])) }) as any : s
+vi.stubGlobal('__', tr)
+vi.mock('@/stores/session', () => ({
+	sessionStore: () => ({ brand: { name: 'WTF Academy' } }),
+}))
 enableAutoUnmount(afterEach)
 
 // frappe-ui's internal module resolution doesn't work under vitest (see
@@ -151,7 +155,7 @@ const mountForm = async (
 			stubs: { teleport: true },
 			// vi.stubGlobal alone doesn't reach a compiled template's `_ctx.__`
 			// access — it has to be on the instance too (see FormShell.test.ts).
-			mocks: { __: (text: string) => text },
+			mocks: { __: tr },
 		},
 	})
 	await flushPromises()

@@ -29,7 +29,7 @@ class TestPWAManifest(BaseTestUtils):
 
 	def test_declares_colours_for_the_os_chrome(self):
 		manifest = _manifest()
-		self.assertEqual(manifest["theme_color"], "#FFFFFF")
+		self.assertEqual(manifest["theme_color"], "#0D0D0D")
 		self.assertEqual(manifest["background_color"], "#FFFFFF")
 
 	def test_ships_both_icon_sizes(self):
@@ -50,6 +50,36 @@ class TestPWAManifest(BaseTestUtils):
 		original = frappe.db.get_single_value("Website Settings", "banner_image")
 		self.addCleanup(frappe.db.set_single_value, "Website Settings", "banner_image", original)
 		frappe.db.set_single_value("Website Settings", "banner_image", "/files/wide-banner.png")
+
+		sources = [icon["src"] for icon in _manifest()["icons"]]
+
+		self.assertNotIn("/files/wide-banner.png", sources)
+
+	def _set_branding(self, **values):
+		for field, value in values.items():
+			original = frappe.db.get_single_value("Website Settings", field)
+			self.addCleanup(frappe.db.set_single_value, "Website Settings", field, original)
+			frappe.db.set_single_value("Website Settings", field, value)
+		frappe.clear_cache()
+
+	def test_description_is_the_academy_one_not_upstream(self):
+		description = _manifest()["description"]
+
+		self.assertEqual(description, "WTF Academy Online: fitness education courses by WTF Gyms.")
+		self.assertNotIn("open source", description)
+
+	def test_icons_come_from_site_branding_when_set(self):
+		self._set_branding(favicon="/files/wtf-fav.png", app_logo="/files/wtf-logo.png")
+
+		icons = {icon["sizes"]: icon for icon in _manifest()["icons"]}
+
+		self.assertEqual(icons["192x192"]["src"], "/files/wtf-fav.png")
+		self.assertEqual(icons["512x512"]["src"], "/files/wtf-logo.png")
+		# Branded icons carry no safe-zone padding, so none may be declared maskable.
+		self.assertNotIn("maskable", [icon["purpose"] for icon in _manifest()["icons"]])
+
+	def test_icons_fall_back_to_bundled_defaults_without_branding(self):
+		self._set_branding(favicon="", app_logo="")
 
 		sources = [icon["src"] for icon in _manifest()["icons"]]
 

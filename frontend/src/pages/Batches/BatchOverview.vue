@@ -1,7 +1,7 @@
 <template>
 	<div class="m-5 pb-10">
 		<div class="flex flex-col md:flex-row justify-between w-full">
-			<div class="md:w-2/3 min-w-0">
+			<div class="w-full md:w-2/3 min-w-0">
 				<h1 class="text-4xl-semibold text-ink-gray-9">
 					{{ batch.data.title }}
 				</h1>
