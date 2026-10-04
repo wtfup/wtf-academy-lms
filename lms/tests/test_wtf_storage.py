@@ -219,3 +219,13 @@ class TestWtfStorage(IntegrationTestCase):
 			f.save(ignore_permissions=True)
 		s3.download_file.assert_not_called()
 		s3.delete_object.assert_not_called()
+
+	# QA cleanup (scripts/qa/cleanup_qa_users.py) finds test-made rows by the leading file name
+	def test_error_log_names_the_file_first(self):
+		s3 = MagicMock()
+		s3.upload_file.side_effect = Exception("AccessDenied")
+		with patch.dict(frappe.conf, CONF), patch("lms.wtf_storage._client", return_value=s3):
+			f = self._file(content=os.urandom(32), name="qa-storage-failure.png")
+		row = frappe.get_last_doc("Error Log", filters={"method": "WTF media upload failed"})
+		assert row.error.startswith("qa-storage-failure.png\n")
+		assert (row.reference_doctype, row.reference_name) == ("File", f.name)

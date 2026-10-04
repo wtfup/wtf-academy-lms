@@ -35,6 +35,16 @@ def _client(region):
     return boto3.client("s3", region_name=region, config=config)
 
 
+def _log(title, doc):
+    # Leads with the file name: QA cleanup removes rows whose message starts with "qa-".
+    frappe.log_error(
+        title=title,
+        message=f"{doc.file_name}\n\n{frappe.get_traceback()}",
+        reference_doctype="File",
+        reference_name=doc.name,
+    )
+
+
 def _content_type(doc):
     ctype = mimetypes.guess_type(doc.file_name or "")[0] or mimetypes.guess_type(doc.file_url or "")[0]
     if not ctype and doc.get("file_type"):
@@ -68,7 +78,7 @@ def upload_public_file(doc, method=None):
         _client(region).upload_file(path, bucket, key, ExtraArgs={"ContentType": ctype, "CacheControl": CACHE_CONTROL})
     except Exception:
         # fail open: the local file stays and keeps serving; the upload itself must not fail
-        frappe.log_error(title="WTF media upload failed", message=frappe.get_traceback())
+        _log("WTF media upload failed", doc)
         return
     url = f"{cdn}/{key}"
     frappe.db.set_value("File", doc.name, "file_url", url, update_modified=False)
@@ -81,13 +91,13 @@ def upload_public_file(doc, method=None):
                 raise ValueError(f"{dt} has no field {field!r}")
             frappe.db.set_value(dt, dn, field, url, update_modified=False)
         except Exception:
-            frappe.log_error(title="WTF media upload failed", message=frappe.get_traceback())
+            _log("WTF media upload failed", doc)
     # keep the local copy only if another File row still points at it (same content dedup)
     if not frappe.db.exists("File", {"file_url": f"/files/{os.path.basename(path)}", "name": ["!=", doc.name]}):
         try:
             os.remove(path)
         except Exception:
-            frappe.log_error(title="WTF media upload failed", message=frappe.get_traceback())
+            _log("WTF media upload failed", doc)
 
 
 def delete_public_file(doc, method=None):
@@ -101,7 +111,7 @@ def delete_public_file(doc, method=None):
         _client(region).delete_object(Bucket=bucket, Key=doc.file_url[len(cdn) + 1:])
     except Exception:
         # an orphaned object is acceptable; an S3/IAM error must never block the File delete
-        frappe.log_error(title="WTF media delete failed", message=frappe.get_traceback())
+        _log("WTF media delete failed", doc)
 
 
 def _private_target(doc, key):
@@ -138,7 +148,7 @@ def make_cdn_file_private(doc, method=None):
                 os.remove(target)
             except OSError:
                 pass
-        frappe.log_error(title="WTF media make-private failed", message=frappe.get_traceback())
+        _log("WTF media make-private failed", doc)
         return
     dt, dn, field = doc.attached_to_doctype, doc.attached_to_name, doc.attached_to_field
     if dt and dn and field:
@@ -146,10 +156,10 @@ def make_cdn_file_private(doc, method=None):
             if frappe.get_meta(dt).has_field(field) and frappe.db.get_value(dt, dn, field) == cdn_url:
                 frappe.db.set_value(dt, dn, field, url, update_modified=False)
         except Exception:
-            frappe.log_error(title="WTF media make-private failed", message=frappe.get_traceback())
+            _log("WTF media make-private failed", doc)
     if frappe.db.exists("File", {"file_url": cdn_url, "name": ["!=", doc.name]}):
         return  # another record still uses this object (same rule as delete_public_file)
     try:
         client.delete_object(Bucket=bucket, Key=key)
     except Exception:
-        frappe.log_error(title="WTF media make-private failed", message=frappe.get_traceback())
+        _log("WTF media make-private failed", doc)
