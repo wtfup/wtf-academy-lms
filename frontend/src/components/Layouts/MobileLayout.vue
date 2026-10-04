@@ -72,6 +72,7 @@
 // simply ends where the bar begins. Padding cannot do that job: Chromium drops
 // a flex column's bottom padding from the scrollable area and the last row
 // stays hidden under the bar.
+import { loginUrl } from '@/utils/guestAuthLinks'
 import { skipToContent } from '@/utils/a11y'
 import { useRouter } from 'vue-router'
 import { ref, computed, watch } from 'vue'
@@ -169,7 +170,7 @@ let isActive = (tab) => {
 // one exception, leaving the SPA for Frappe's own /login, which vue-router
 // knows nothing about.
 const handleClick = (tab) => {
-	if (tab.label == 'Log in') window.location.href = '/login'
+	if (tab.label == 'Log in') window.location.href = loginUrl()
 	else router.push({ name: tab.to })
 }
 </script>

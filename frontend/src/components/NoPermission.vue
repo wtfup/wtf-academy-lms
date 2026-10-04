@@ -30,6 +30,7 @@
 	</div>
 </template>
 <script setup>
+import { loginUrl } from '@/utils/guestAuthLinks'
 import { inject } from 'vue'
 import { Button, usePageMeta } from 'frappe-ui'
 import { sessionStore } from '../stores/session'
@@ -38,7 +39,7 @@ const user = inject('$user')
 const { brand } = sessionStore()
 
 const redirectToLogin = () => {
-	window.location.href = '/login'
+	window.location.href = loginUrl()
 }
 
 usePageMeta(() => {

@@ -7,7 +7,7 @@
 		>
 			<p class="text-p-base text-ink-gray-6">{{ signedOutPrompt }}</p>
 			<a
-				href="/login"
+				:href="safeUrl(loginUrl())"
 				class="text-p-base font-medium text-ink-gray-9 underline underline-offset-2"
 			>
 				{{ logInLabel }}
@@ -74,6 +74,7 @@
 // MobileMoreMenu.vue; the scale is Raven's, not Gameplan's 120px/26px.
 // MobilePageLayout still renders the title as an sr-only h1, the page's only
 // heading, since the rows themselves are spans.
+import { loginUrl } from '@/utils/guestAuthLinks'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { usePageMeta } from 'frappe-ui'

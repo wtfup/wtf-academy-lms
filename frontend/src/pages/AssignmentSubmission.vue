@@ -10,6 +10,7 @@
 	</div>
 </template>
 <script setup>
+import { loginUrl } from '@/utils/guestAuthLinks'
 import { createResource, usePageMeta } from 'frappe-ui'
 import PageHeader from '@/components/Layouts/PageHeader.vue'
 import { computed, inject, onMounted, ref } from 'vue'
@@ -55,7 +56,7 @@ const title = createResource({
 
 onMounted(() => {
 	if (!user.data) {
-		window.location.href = '/login'
+		window.location.href = loginUrl()
 	}
 
 	if (new URLSearchParams(window.location.search).get('fromLesson')) {

@@ -12,6 +12,7 @@
 	</div>
 </template>
 <script setup>
+import { loginUrl } from '@/utils/guestAuthLinks'
 import { inject } from 'vue'
 import { Button } from 'frappe-ui'
 import Quiz from '@/components/Quiz.vue'
@@ -25,6 +26,6 @@ const props = defineProps({
 })
 
 const redirectToLogin = () => {
-	window.location.href = `/login`
+	window.location.href = loginUrl()
 }
 </script>

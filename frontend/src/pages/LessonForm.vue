@@ -109,6 +109,7 @@
 // The title textarea is `block` because a textarea is inline-block by default,
 // so it would sit on the parent's line box and carry its descender — 5px of
 // space under the title belonging to no rule and no gap.
+import { loginUrl } from '@/utils/guestAuthLinks'
 import {
 	Badge,
 	Button,
@@ -280,7 +281,7 @@ defineExpose({
 
 onMounted(() => {
 	if (!user.data?.is_moderator && !user.data?.is_instructor) {
-		window.location.href = '/login'
+		window.location.href = loginUrl()
 	}
 	capture('lesson_form_opened')
 	enablePlyr()

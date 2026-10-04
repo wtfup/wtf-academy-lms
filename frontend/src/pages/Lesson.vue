@@ -390,6 +390,7 @@
 	/>
 </template>
 <script setup>
+import { loginUrl } from '@/utils/guestAuthLinks'
 import {
 	Badge,
 	Button,
@@ -1266,9 +1267,7 @@ watch(allowDiscussions, () => {
 })
 
 const redirectToLogin = () => {
-	window.location.href = `/login?redirect-to=${getLmsRoute(
-		`courses/${props.courseName}`
-	)}`
+	window.location.href = loginUrl(getLmsRoute(`courses/${props.courseName}`))
 }
 
 usePageMeta(() => {

@@ -17,6 +17,7 @@
 	</div>
 </template>
 <script setup>
+import { loginUrl } from '@/utils/guestAuthLinks'
 import { Button } from 'frappe-ui'
 
 const props = defineProps({
@@ -34,7 +35,7 @@ const props = defineProps({
 	},
 	buttonLink: {
 		type: String,
-		default: '/login',
+		default: () => loginUrl(),
 	},
 })
 

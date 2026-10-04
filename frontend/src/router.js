@@ -3,7 +3,8 @@ import { call } from 'frappe-ui'
 import { usersStore } from './stores/user'
 import { sessionStore } from './stores/session'
 import { useSettings } from './stores/settings'
-import { getLmsBasePath } from './utils/basePath'
+import { getLmsBasePath, getLmsRoute } from './utils/basePath'
+import { loginUrl } from './utils/guestAuthLinks'
 import { routes } from './routes'
 
 // Run the fresh-site-admin persona check at most once per app load.
@@ -47,7 +48,7 @@ router.beforeEach(async (to, from, next) => {
 
 		await settings.promise
 		if (!settings.data.allow_guest_access) {
-			window.location.href = '/login'
+			window.location.href = loginUrl(getLmsRoute(to.fullPath))
 			return
 		}
 	}

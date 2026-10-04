@@ -228,14 +228,13 @@
 		<div v-else-if="!user.data?.name">
 			<NotPermitted
 				:text="__('Please login to access this page.')"
-				:buttonLink="`/login?redirect-to=${getLmsRoute(
-					`billing/${type}/${name}`
-				)}`"
+				:buttonLink="loginUrl(getLmsRoute(`billing/${type}/${name}`))"
 			/>
 		</div>
 	</PageBody>
 </template>
 <script setup>
+import { loginUrl } from '@/utils/guestAuthLinks'
 import {
 	Button,
 	Combobox,

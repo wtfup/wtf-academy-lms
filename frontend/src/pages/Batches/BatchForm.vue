@@ -288,6 +288,7 @@
 	/>
 </template>
 <script setup lang="ts">
+import { loginUrl } from '@/utils/guestAuthLinks'
 import {
 	computed,
 	getCurrentInstance,
@@ -453,7 +454,7 @@ const autoSave = useDebounceFn((): void => {
 }, 1000)
 
 onMounted(() => {
-	if (!user.data) window.location.href = '/login'
+	if (!user.data) window.location.href = loginUrl()
 })
 
 useKeyboardShortcuts({ shortcuts: [saveShortcut(() => submitBatch())] })

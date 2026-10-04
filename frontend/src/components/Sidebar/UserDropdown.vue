@@ -65,6 +65,7 @@
 </template>
 
 <script setup>
+import { loginUrl } from '@/utils/guestAuthLinks'
 import { sessionStore } from '@/stores/session'
 import { call, createResource, Dropdown, toast } from 'frappe-ui'
 import { useRouter } from 'vue-router'
@@ -272,7 +273,7 @@ const userDropdownOptions = computed(() => {
 					icon: 'lucide-log-in',
 					label: 'Log in',
 					onClick: () => {
-						window.location.href = '/login'
+						window.location.href = loginUrl()
 					},
 					condition: () => {
 						return !isLoggedIn

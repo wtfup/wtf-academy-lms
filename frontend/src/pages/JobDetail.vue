@@ -140,6 +140,8 @@
 	</div>
 </template>
 <script setup>
+import { loginUrl } from '@/utils/guestAuthLinks'
+import { getLmsRoute } from '@/utils/basePath'
 import { Badge, createResource, usePageMeta } from 'frappe-ui'
 import { inject, ref, computed, watch, nextTick } from 'vue'
 import { sessionStore } from '../stores/session'
@@ -213,7 +215,7 @@ const openApplicationModal = () => {
 }
 
 const redirectToLogin = (job) => {
-	window.location.href = `/login?redirect-to=/job-openings/${job}`
+	window.location.href = loginUrl(getLmsRoute(`job-openings/${job}`))
 }
 
 // A company_website is a plain Data field, so it often arrives without a

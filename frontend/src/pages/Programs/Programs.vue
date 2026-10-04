@@ -82,6 +82,7 @@
 	/>
 </template>
 <script setup>
+import { loginUrl } from '@/utils/guestAuthLinks'
 import {
 	Button,
 	createResource,
@@ -110,7 +111,7 @@ const filters = ref({})
 
 onMounted(() => {
 	if (!user.data) {
-		window.location.href = '/login'
+		window.location.href = loginUrl()
 	}
 	if (user.data?.is_moderator || user.data?.is_instructor) {
 		setFiltersFromQuery()
