@@ -141,6 +141,26 @@ class TestFreePreviewQuizSubmission(BaseTestUtils):
 		with self.assertRaises(frappe.PermissionError):
 			self._as(self.outsider.email, submit_quiz, self.quiz.name, json.dumps(self.results))
 
+	def test_outsider_cannot_submit_when_the_course_is_unpublished(self):
+		frappe.db.set_value("LMS Course", self.course.name, "published", 0)
+		with self.assertRaises(frappe.PermissionError):
+			self._as(self.outsider.email, submit_quiz, self.quiz.name, json.dumps(self.results))
+
+	def test_outsider_cannot_submit_through_another_courses_preview_lesson(self):
+		frappe.db.set_value("Course Lesson", self.lesson.name, "include_in_preview", 0)
+		other_lesson = self._other_course_preview_lesson()
+		frappe.db.set_value("Course Lesson", other_lesson, "quiz_id", self.quiz.name)
+		with self.assertRaises(frappe.PermissionError):
+			self._as(self.outsider.email, submit_quiz, self.quiz.name, json.dumps(self.results))
+
+	def _other_course_preview_lesson(self):
+		hash = frappe.generate_hash(length=6)
+		course = self._create_course(title=f"Preview Submit Other {hash}", instructor=self.instructor.email)
+		chapter = self._create_chapter(f"PVSOChapter {hash}", course.name)
+		lesson = self._create_lesson(f"PVSOLesson {hash}", chapter.name, course.name)
+		frappe.db.set_value("Course Lesson", lesson.name, "include_in_preview", 1)
+		return lesson.name
+
 	def test_guest_cannot_submit_a_preview_quiz(self):
 		with self.assertRaises(frappe.PermissionError):
 			self._as("Guest", submit_quiz, self.quiz.name, json.dumps(self.results))
@@ -193,3 +213,20 @@ class TestCheckAnswerAccess(BaseTestUtils):
 	def test_preview_learner_can_check_an_answer(self):
 		frappe.db.set_value("Course Lesson", self.lesson.name, "include_in_preview", 1)
 		self.assertIsNotNone(self._check(self.outsider.email))
+
+	def test_outsider_cannot_check_an_answer_when_the_course_is_unpublished(self):
+		frappe.db.set_value("Course Lesson", self.lesson.name, "include_in_preview", 1)
+		frappe.db.set_value("LMS Course", self.course.name, "published", 0)
+		with self.assertRaises(frappe.PermissionError):
+			self._check(self.outsider.email)
+
+	def test_outsider_cannot_check_an_answer_through_another_courses_preview_lesson(self):
+		hash = frappe.generate_hash(length=6)
+		course = self._create_course(title=f"Check Answer Other {hash}", instructor=self.instructor.email)
+		chapter = self._create_chapter(f"CAOChapter {hash}", course.name)
+		lesson = self._create_lesson(f"CAOLesson {hash}", chapter.name, course.name)
+		frappe.db.set_value(
+			"Course Lesson", lesson.name, {"include_in_preview": 1, "quiz_id": self.quiz.name}
+		)
+		with self.assertRaises(frappe.PermissionError):
+			self._check(self.outsider.email)

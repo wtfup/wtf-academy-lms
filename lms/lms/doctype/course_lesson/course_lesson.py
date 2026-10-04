@@ -28,6 +28,7 @@ from lms.lms.utils import (
 	get_course_progress,
 	get_editorjs_blocks,
 	guest_access_allowed,
+	has_moderator_role,
 	is_demo_course,
 	recalculate_course_progress,
 	sanitize_editorjs,
@@ -74,6 +75,8 @@ class CourseLesson(Document):
 	def validate_quiz_id(self):
 		if self.quiz_id and not frappe.db.exists("LMS Quiz", self.quiz_id):
 			frappe.throw(_("Invalid Quiz ID"))
+		if self.quiz_id:
+			self.validate_quiz_course(self.quiz_id)
 
 		if self.content:
 			self.save_lesson_details_in_quiz(self.content)
@@ -87,6 +90,7 @@ class CourseLesson(Document):
 				quiz = (block.get("data") or {}).get("quiz")
 				if not frappe.db.exists("LMS Quiz", quiz):
 					frappe.throw(_("Invalid Quiz ID in content"))
+				self.validate_quiz_course(quiz)
 				frappe.db.set_value(
 					"LMS Quiz",
 					quiz,
@@ -95,6 +99,23 @@ class CourseLesson(Document):
 						"lesson": self.name,
 					},
 				)
+
+	def validate_quiz_course(self, quiz):
+		"""A lesson may only use a quiz of its own course, or one no course owns yet.
+
+		Embedding rewrites LMS Quiz.course/lesson to this lesson, and that link decides
+		who may read the quiz, so another course's quiz would be handed to this course's
+		learners. Moderators may still move a quiz between courses.
+		"""
+		owner_course = frappe.db.get_value("LMS Quiz", quiz, "course")
+		if not owner_course or owner_course == self.course:
+			return
+		if frappe.session.user == "Administrator" or has_moderator_role():
+			return
+		frappe.throw(
+			_("Quiz {0} belongs to another course and cannot be used in this lesson.").format(quiz),
+			frappe.ValidationError,
+		)
 
 
 def cleanup_lesson_backreferences(lesson: str):

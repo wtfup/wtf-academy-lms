@@ -101,6 +101,17 @@ class TestFreePreviewQuizAccess(BaseTestUtils):
 		cls.locked_lesson = cls._create_lesson(f"PVLesson Paid {hash}", cls.chapter.name, cls.course.name)
 		frappe.db.set_value("Course Lesson", cls.lesson.name, "include_in_preview", 1)
 
+		# Another published course with its own free preview lesson. Its lessons must
+		# never open a quiz that belongs to the course above.
+		cls.other_course = cls._create_course(
+			title=f"Preview Other Course {hash}", instructor=cls.instructor.email
+		)
+		cls.other_chapter = cls._create_chapter(f"PVOChapter {hash}", cls.other_course.name)
+		cls.other_lesson = cls._create_lesson(
+			f"PVOLesson {hash}", cls.other_chapter.name, cls.other_course.name
+		)
+		frappe.db.set_value("Course Lesson", cls.other_lesson.name, "include_in_preview", 1)
+
 	def _can(self, user, quiz=None):
 		from lms.lms.permissions import can_access_quiz
 
@@ -146,7 +157,7 @@ class TestFreePreviewQuizAccess(BaseTestUtils):
 			self._call(self.outsider.email)
 
 	def test_preview_is_found_through_course_lesson_quiz_id(self):
-		frappe.db.set_value("LMS Quiz", self.quiz.name, {"course": None, "lesson": None})
+		frappe.db.set_value("LMS Quiz", self.quiz.name, "lesson", None)
 		frappe.db.set_value(
 			"Course Lesson",
 			self.lesson.name,
@@ -176,3 +187,100 @@ class TestFreePreviewQuizAccess(BaseTestUtils):
 			),
 		)
 		self.assertFalse(self._can(self.outsider.email))
+
+	def test_quiz_with_no_owning_course_gets_no_preview_grant(self):
+		# A quiz no course owns is not part of any free module.
+		frappe.db.set_value("LMS Quiz", self.quiz.name, "course", None)
+		self.assertFalse(self._can(self.outsider.email))
+
+	def _move_preview_to_the_other_course(self):
+		# The quiz's own preview lesson goes paid, so only the other course's preview
+		# lesson could open it.
+		frappe.db.set_value("Course Lesson", self.lesson.name, "include_in_preview", 0)
+
+	def test_another_courses_preview_lesson_cannot_open_the_quiz_via_quiz_id(self):
+		self._move_preview_to_the_other_course()
+		frappe.db.set_value("Course Lesson", self.other_lesson.name, "quiz_id", self.quiz.name)
+		self.assertFalse(self._can(self.outsider.email))
+		with self.assertRaises(frappe.PermissionError):
+			self._call(self.outsider.email)
+
+	def test_another_courses_preview_lesson_cannot_open_the_quiz_via_an_embed(self):
+		self._move_preview_to_the_other_course()
+		# Written straight to the row: a lesson save now refuses the cross-course embed.
+		frappe.db.set_value(
+			"Course Lesson", self.other_lesson.name, "content", _quiz_block_content(self.quiz.name)
+		)
+		self.assertFalse(self._can(self.outsider.email))
+		with self.assertRaises(frappe.PermissionError):
+			self._call(self.outsider.email)
+
+
+class TestLessonQuizCourseBinding(BaseTestUtils):
+	"""A lesson may only name or embed a quiz of its own course (or an unowned one).
+	Embedding course B's quiz in a course A lesson used to rewrite LMS Quiz.course and
+	.lesson to course A, which hands course B's quiz to course A's learners."""
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		hash = frappe.generate_hash(length=6)
+		cls.author = cls._create_user(f"qbauth-{hash}@example.com", "Bea", "Author", ["Course Creator"])
+		cls.moderator = cls._create_user(f"qbmod-{hash}@example.com", "Max", "Mod", ["Moderator"])
+		cls.questions = cls._create_quiz_questions()
+
+		cls.course_a = cls._create_course(title=f"Binding Course A {hash}", instructor=cls.author.email)
+		cls.chapter_a = cls._create_chapter(f"BAChapter {hash}", cls.course_a.name)
+		cls.course_b = cls._create_course(title=f"Binding Course B {hash}", instructor=cls.author.email)
+		cls.chapter_b = cls._create_chapter(f"BBChapter {hash}", cls.course_b.name)
+
+		cls.quiz_b = cls._create_quiz(cls.questions, title=f"Binding Quiz B {hash}")
+		cls.lesson_b = cls._create_lesson(
+			f"BBLesson {hash}", cls.chapter_b.name, cls.course_b.name, _quiz_block_content(cls.quiz_b.name)
+		)
+		cls.lesson_a = cls._create_lesson(f"BALesson {hash}", cls.chapter_a.name, cls.course_a.name)
+
+	def _save_as(self, user, **fields):
+		frappe.set_user(user)
+		try:
+			lesson = frappe.get_doc("Course Lesson", self.lesson_a.name)
+			lesson.update(fields)
+			lesson.save(ignore_permissions=True)
+		finally:
+			frappe.set_user("Administrator")
+
+	def test_quiz_b_is_owned_by_course_b(self):
+		self.assertEqual(frappe.db.get_value("LMS Quiz", self.quiz_b.name, "course"), self.course_b.name)
+
+	def test_non_moderator_cannot_set_another_courses_quiz_as_quiz_id(self):
+		with self.assertRaises(frappe.ValidationError):
+			self._save_as(self.author.email, quiz_id=self.quiz_b.name)
+
+	def test_non_moderator_cannot_embed_another_courses_quiz(self):
+		with self.assertRaises(frappe.ValidationError):
+			self._save_as(self.author.email, content=_quiz_block_content(self.quiz_b.name))
+		self.assertEqual(frappe.db.get_value("LMS Quiz", self.quiz_b.name, "course"), self.course_b.name)
+
+	def test_non_moderator_cannot_embed_another_courses_quiz_in_instructor_content(self):
+		with self.assertRaises(frappe.ValidationError):
+			self._save_as(self.author.email, instructor_content=_quiz_block_content(self.quiz_b.name))
+
+	def test_moderator_can_still_embed_another_courses_quiz(self):
+		self._save_as(self.moderator.email, content=_quiz_block_content(self.quiz_b.name))
+		self.assertEqual(frappe.db.get_value("LMS Quiz", self.quiz_b.name, "course"), self.course_a.name)
+
+	def test_resaving_a_lesson_with_its_own_courses_quiz_is_allowed(self):
+		# The seeded content: every quiz embedded only in its own course.
+		frappe.set_user(self.author.email)
+		try:
+			lesson = frappe.get_doc("Course Lesson", self.lesson_b.name)
+			lesson.quiz_id = self.quiz_b.name
+			lesson.save(ignore_permissions=True)
+		finally:
+			frappe.set_user("Administrator")
+		self.assertEqual(frappe.db.get_value("LMS Quiz", self.quiz_b.name, "lesson"), self.lesson_b.name)
+
+	def test_an_unowned_quiz_can_be_embedded(self):
+		unowned = self._create_quiz(self.questions, title=f"Binding Unowned {frappe.generate_hash(length=6)}")
+		self._save_as(self.author.email, content=_quiz_block_content(unowned.name))
+		self.assertEqual(frappe.db.get_value("LMS Quiz", unowned.name, "course"), self.course_a.name)

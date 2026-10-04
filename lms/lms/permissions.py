@@ -394,43 +394,48 @@ def can_access_quiz(quiz: str, *, user: str | None = None) -> bool:
 				return True
 
 		# Free trial: the first module of a course is open to any signed-in learner.
-		return user != "Guest" and _in_free_preview_lesson(quiz, quiz_row.lesson, user)
+		return user != "Guest" and _in_free_preview_lesson(quiz, quiz_row, user)
 	finally:
 		frappe.session.user = original_user
 
 
-def _in_free_preview_lesson(quiz: str, owning_lesson: str | None, user: str) -> bool:
-	"""Whether ``quiz`` sits in an ``include_in_preview`` lesson of a published course
-	that ``user`` is not enrolled in.
+def _in_free_preview_lesson(quiz: str, quiz_row: dict, user: str) -> bool:
+	"""Whether ``quiz`` sits in an ``include_in_preview`` lesson of its own, published
+	course, and ``user`` is not enrolled in that course.
 
-	The lessons considered are LMS Quiz.lesson, any lesson naming the quiz in quiz_id,
-	and any preview lesson whose content embeds it as a quiz block (LMS Quiz.lesson
-	records only the last lesson saved with the block). An enrolled member is left to
-	the membership branch of can_access_quiz, so a sequential course's lock still
-	applies to them on a preview lesson.
+	Only the quiz's owning course (LMS Quiz.course) counts: a preview lesson of any other
+	course naming the quiz grants nothing, and a quiz no course owns is in no free module.
+	Within that course the lessons considered are LMS Quiz.lesson, any lesson naming the
+	quiz in quiz_id, and any preview lesson whose content embeds it as a quiz block
+	(LMS Quiz.lesson records only the last lesson saved with the block). An enrolled
+	member is left to the membership branch of can_access_quiz, so a sequential course's
+	lock still applies to them on a preview lesson.
 	"""
+	if not quiz_row.course or get_membership(quiz_row.course, user):
+		return False
+
 	lesson = frappe.qb.DocType("Course Lesson")
 	course = frappe.qb.DocType("LMS Course")
 	preview_lessons = (
 		frappe.qb.from_(lesson)
 		.join(course)
 		.on(course.name == lesson.course)
-		.select(lesson.name, lesson.course, lesson.content)
-		.where((lesson.include_in_preview == 1) & (course.published == 1))
+		.select(lesson.name, lesson.content)
+		.where(
+			(lesson.course == quiz_row.course) & (lesson.include_in_preview == 1) & (course.published == 1)
+		)
 	)
 	named = lesson.quiz_id == quiz
-	if owning_lesson:
-		named = named | (lesson.name == owning_lesson)
-	rows = list(preview_lessons.where(named).run(as_dict=True))
+	if quiz_row.lesson:
+		named = named | (lesson.name == quiz_row.lesson)
+	if preview_lessons.where(named).limit(1).run():
+		return True
 	# The embed search is a substring prefilter; the block parse below confirms it.
-	for row in preview_lessons.where(Locate(quiz, lesson.content) > 0).run(as_dict=True):
-		if any(
-			block.get("type") == "quiz" and (block.get("data") or {}).get("quiz") == quiz
-			for block in get_editorjs_blocks(row.content)
-		):
-			rows.append(row)
-
-	return any(not get_membership(row.course, user) for row in rows)
+	return any(
+		block.get("type") == "quiz" and (block.get("data") or {}).get("quiz") == quiz
+		for row in preview_lessons.where(Locate(quiz, lesson.content) > 0).run(as_dict=True)
+		for block in get_editorjs_blocks(row.content)
+	)
 
 
 def enforces_lesson_completion(course: str) -> bool:
