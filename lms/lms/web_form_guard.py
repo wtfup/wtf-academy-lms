@@ -10,10 +10,19 @@ wins (frappe.override_whitelisted_method returns overrides[-1]). Both the core c
 cmd resolve here. This wrapper pins the doctype to the Web Form record, then delegates to Frappe
 core's accept (which also pins the doctype, checks published/login_required/allow_edit and only
 sets the form's own fields). Payment web forms are delegated to payments with the pinned doctype.
+
+Guest photos: core accept() saves a web form attachment as a File with the Guest's own permissions, which
+Guest does not have (PermissionError). For Guest INSERTS the guard takes over attachment fields: the value must
+be "<name>,data:image/(jpeg|png|webp);base64,<data>" whose bytes really are that image, at most 5 MB. It is saved
+as a public File (storage hook -> S3/CDN) attached to the new record. Anything else (other types, SVG, HTML, a
+path or URL to an existing file) is refused before anything is stored.
 """
 
+import base64
+import binascii
 import inspect
 import json
+import re
 
 import frappe
 from frappe import _
@@ -26,6 +35,72 @@ GUARD = "lms.lms.web_form_guard.accept"
 
 def _invalid():
 	frappe.throw(_("Invalid request"), frappe.ValidationError)
+
+
+GUEST_IMAGE_MAX_BYTES = 5 * 1024 * 1024
+_ATTACH_TYPES = ("Attach", "Attach Image")
+_DATA_URL = re.compile(r"([^,]{0,255}),data:([a-zA-Z0-9.+/-]{1,64});base64,([A-Za-z0-9+/=\s]+)", re.S)
+_IMAGE_EXT = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
+
+
+def _is_image(mime: str, content: bytes) -> bool:
+	if mime == "image/jpeg":
+		return content[:3] == b"\xff\xd8\xff"
+	if mime == "image/png":
+		return content[:8] == b"\x89PNG\r\n\x1a\n"
+	if mime == "image/webp":
+		return content[:4] == b"RIFF" and content[8:12] == b"WEBP"
+	return False
+
+
+def _take_guest_images(wf, payload) -> list:
+	"""Guest inserts only: validate every attachment field and remove it from the payload, so core accept()
+	never tries to save a File as Guest. Returns [(fieldname, file_name, bytes)] to save after the insert."""
+	if frappe.session.user != "Guest" or payload.get("name"):
+		return []
+	meta = frappe.get_meta(wf.doc_type)
+	images = []
+	for field in wf.web_form_fields:
+		df = meta.get_field(field.fieldname)
+		if not df or df.fieldtype not in _ATTACH_TYPES:
+			continue
+		value = payload.get(field.fieldname)
+		if not value:
+			continue
+		m = _DATA_URL.fullmatch(value) if isinstance(value, str) else None
+		if not m:
+			_invalid()  # a guest may upload a new image, never point the field at an existing or remote file
+		mime = m.group(2).lower()
+		if mime not in _IMAGE_EXT:
+			_invalid()
+		try:
+			content = base64.b64decode(re.sub(r"\s+", "", m.group(3)), validate=True)
+		except (binascii.Error, ValueError):
+			_invalid()
+		if not content or len(content) > GUEST_IMAGE_MAX_BYTES or not _is_image(mime, content):
+			_invalid()
+		stem = re.sub(r"\.[^.]*$", "", m.group(1).replace("\\", "/").split("/")[-1])
+		stem = re.sub(r"[^a-z0-9]+", "-", stem.lower()).strip("-")[:60] or "photo"
+		images.append((field.fieldname, f"{stem}.{_IMAGE_EXT[mime]}", content))
+		payload[field.fieldname] = ""
+	return images
+
+
+def _save_guest_images(doc, images) -> None:
+	for fieldname, file_name, content in images:
+		f = frappe.get_doc(
+			{
+				"doctype": "File",
+				"file_name": file_name,
+				"attached_to_doctype": doc.doctype,
+				"attached_to_name": doc.name,
+				"attached_to_field": fieldname,
+				"is_private": 0,
+				"content": content,
+			}
+		)
+		f.save(ignore_permissions=True)
+		doc.db_set(fieldname, f.file_url)
 
 
 @frappe.whitelist(methods=["POST", "PUT"], allow_guest=True)
@@ -85,7 +160,10 @@ def accept(
 		payments_accept = inspect.unwrap(payments_accept)
 		return payments_accept(web_form=web_form, data=json.dumps(payload), for_payment=for_payment)
 
-	return core_accept(web_form=web_form, data=json.dumps(payload), web_form_request_key=web_form_request_key)
+	images = _take_guest_images(wf, payload)
+	doc = core_accept(web_form=web_form, data=json.dumps(payload), web_form_request_key=web_form_request_key)
+	_save_guest_images(doc, images)
+	return doc
 
 
 def check_override_precedence() -> None:
