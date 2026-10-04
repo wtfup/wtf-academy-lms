@@ -46,4 +46,40 @@ describe('WTF theme layer', () => {
 		const rootBlock = css.match(/:root:not[^{]*\{[^}]*\}/)?.[0] ?? ''
 		expect(rootBlock).not.toMatch(/--ink-gray-/)
 	})
+
+	const sidebarBlock = () => css.match(/\.wtf-sidebar\s*\{[^}]*\}/)?.[0] ?? ''
+	const lum = (hex: string) => {
+		const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4))
+		return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+	}
+	const contrast = (a: string, b: string) => {
+		const [x, y] = [lum(a), lum(b)].sort((m, n) => n - m)
+		return (x + 0.05) / (y + 0.05)
+	}
+	const tok = (name: string) => sidebarBlock().match(new RegExp(`${name}:\\s*(#[0-9a-fA-F]{6})`))?.[1] as string
+
+	it('remaps every bg-surface-* used inside the sidebar to a dark value', () => {
+		const used = new Set([...sidebar.matchAll(/bg-surface-([a-z0-9-]+)/g)].map((m) => m[1]))
+		for (const u of used) {
+			if (u === 'sidebar') continue
+			const t = `--surface-${u}`
+			expect(sidebarBlock(), t).toContain(t)
+			expect(lum(tok(t)), t).toBeLessThan(0.2)
+		}
+	})
+
+	it('keeps every inverted ink readable (>= 4.5:1) on each sidebar surface', () => {
+		const inks = ['--ink-gray-5', '--ink-gray-7', '--ink-gray-8', '--ink-gray-9']
+		for (const surf of ['--surface-base', '--surface-elevation-2', '--surface-gray-2'])
+			for (const ink of inks) expect(contrast(tok(ink), tok(surf)), `${ink} on ${surf}`).toBeGreaterThanOrEqual(4.5)
+		expect(contrast(tok('--ink-gray-8'), tok('--surface-elevation-3'))).toBeGreaterThanOrEqual(4.5)
+	})
+
+	it('makes solid buttons brand red inside the sidebar, visible on its cards', () => {
+		expect(sidebarBlock().toLowerCase()).toMatch(/--surface-gray-10:\s*#d2000b/)
+		expect(sidebarBlock().toLowerCase()).toMatch(/--surface-gray-9:\s*#b0000a/)
+		expect(contrast(tok('--ink-base'), tok('--surface-gray-10'))).toBeGreaterThanOrEqual(4.5)
+		expect(contrast(tok('--ink-base'), tok('--surface-gray-9'))).toBeGreaterThanOrEqual(4.5)
+		expect(contrast(tok('--surface-gray-10'), tok('--surface-base'))).toBeGreaterThanOrEqual(2.5)
+	})
 })
