@@ -15,7 +15,9 @@ describe('isUploadedMedia', () => {
 
 	it('treats a media-CDN URL as an upload', () => {
 		expect(MEDIA_CDN_BASE).toBe('https://cdn.wtfgymsacademy.com/')
-		expect(isUploadedMedia('https://cdn.wtfgymsacademy.com/lms/0123abcd.mp4')).toBe(true)
+		expect(
+			isUploadedMedia('https://cdn.wtfgymsacademy.com/lms/0123abcd.mp4'),
+		).toBe(true)
 	})
 
 	it('treats links and look-alikes as links', () => {
@@ -37,14 +39,21 @@ describe('isUploadedMedia', () => {
 		const offenders = globSync('**/*.{ts,js,vue}', { cwd: SRC })
 			.filter((f) => !f.startsWith('tests/') && f !== 'utils/mediaUrl.ts')
 			.filter((f) =>
-				/startsWith\(\s*['"`](\/private)?\/files\//.test(readFileSync(resolve(SRC, f), 'utf8'))
+				/startsWith\(\s*['"`](\/private)?\/files\//.test(
+					readFileSync(resolve(SRC, f), 'utf8'),
+				),
 			)
 		expect(offenders).toEqual([])
 	})
 
 	it('drives the video field upload/link switch', () => {
-		const vue = readFileSync(resolve(SRC, 'components/Controls/VideoPreviewField.vue'), 'utf8')
-		expect(vue).toMatch(/import \{ isUploadedMedia \} from '@\/utils\/mediaUrl'/)
+		const vue = readFileSync(
+			resolve(SRC, 'components/Controls/VideoPreviewField.vue'),
+			'utf8',
+		)
+		expect(vue).toMatch(
+			/import \{ isUploadedMedia \} from '@\/utils\/mediaUrl'/,
+		)
 		expect(vue).toMatch(/isUploadedMedia\(props\.modelValue\)/)
 	})
 })
