@@ -152,9 +152,12 @@ class TestRequestContext(unittest.TestCase):
 
 class TestQueuePurchase(_SiteConf):
 	def test_enqueues_on_short_queue_after_commit_with_request_context(self):
-		with patch.dict(frappe.conf, CONF), patch("frappe.enqueue") as enqueue, patch.object(
-			wtf_meta, "capture_request_context", return_value=REQUEST_CTX
-		), patch.object(wtf_meta, "remember_browser_purchase"):
+		with (
+			patch.dict(frappe.conf, CONF),
+			patch("frappe.enqueue") as enqueue,
+			patch.object(wtf_meta, "capture_request_context", return_value=REQUEST_CTX),
+			patch.object(wtf_meta, "remember_browser_purchase"),
+		):
 			wtf_meta.queue_purchase("PAY-0001")
 		enqueue.assert_called_once()
 		args, kwargs = enqueue.call_args
@@ -165,10 +168,15 @@ class TestQueuePurchase(_SiteConf):
 		self.assertEqual(kwargs["request_ctx"], REQUEST_CTX)
 
 	def test_not_configured_is_noop(self):
-		for conf in ({"meta_pixel_id": None, "meta_capi_token": "x"}, {"meta_pixel_id": "1", "meta_capi_token": None}):
-			with patch.dict(frappe.conf, conf), patch("frappe.enqueue") as enqueue, patch.object(
-				wtf_meta, "remember_browser_purchase"
-			) as remember:
+		for conf in (
+			{"meta_pixel_id": None, "meta_capi_token": "x"},
+			{"meta_pixel_id": "1", "meta_capi_token": None},
+		):
+			with (
+				patch.dict(frappe.conf, conf),
+				patch("frappe.enqueue") as enqueue,
+				patch.object(wtf_meta, "remember_browser_purchase") as remember,
+			):
 				wtf_meta.queue_purchase("PAY-0001")
 			enqueue.assert_not_called()
 			# The browser pixel only needs the (public) pixel id, not the CAPI token.
@@ -176,8 +184,9 @@ class TestQueuePurchase(_SiteConf):
 
 	def test_remembers_the_purchase_for_the_learners_next_lms_page(self):
 		cache = MagicMock()
-		with patch.object(frappe, "cache", cache), patch.object(
-			frappe, "session", frappe._dict(user="learner@example.com")
+		with (
+			patch.object(frappe, "cache", cache),
+			patch.object(frappe, "session", frappe._dict(user="learner@example.com")),
 		):
 			wtf_meta.remember_browser_purchase("PAY-0001")
 		args, kwargs = cache.set_value.call_args
@@ -185,9 +194,11 @@ class TestQueuePurchase(_SiteConf):
 		self.assertTrue(kwargs["expires_in_sec"])
 
 	def test_never_breaks_the_payment_callback(self):
-		with patch.dict(frappe.conf, CONF), patch("frappe.enqueue", side_effect=Exception("redis down")), patch(
-			"frappe.log_error"
-		) as log_error:
+		with (
+			patch.dict(frappe.conf, CONF),
+			patch("frappe.enqueue", side_effect=Exception("redis down")),
+			patch("frappe.log_error") as log_error,
+		):
 			wtf_meta.queue_purchase("PAY-0001")
 		log_error.assert_called_once()
 
@@ -197,9 +208,17 @@ class TestSendPurchase(_SiteConf):
 		db = MagicMock()
 		db.get_value.return_value = row
 		post = post or MagicMock(return_value=MagicMock(status_code=200))
-		with patch.dict(frappe.conf, CONF), patch.object(frappe, "db", db), patch.object(
-			wtf_meta, "_details", return_value=("Sports Nutrition", "9876543210", "https://x/lms/courses/c")
-		), patch.object(wtf_meta.requests, "post", post), patch("frappe.log_error") as log_error:
+		with (
+			patch.dict(frappe.conf, CONF),
+			patch.object(frappe, "db", db),
+			patch.object(
+				wtf_meta,
+				"_details",
+				return_value=("Sports Nutrition", "9876543210", "https://x/lms/courses/c"),
+			),
+			patch.object(wtf_meta.requests, "post", post),
+			patch("frappe.log_error") as log_error,
+		):
 			wtf_meta.send_purchase("PAY-0001", REQUEST_CTX)
 		return db, post, log_error
 
@@ -263,11 +282,14 @@ class TestPaymentCallbackHook(unittest.TestCase):
 		from lms.lms import utils
 
 		data = frappe._dict(payment="PAY-0001", payment_gateway="Razorpay")
-		with patch.object(utils, "get_payment_callback_data", return_value=data), patch.object(
-			utils, "serialize_callbacks_without_the_constraint"
-		), patch.object(utils, "payment_already_recorded", return_value=already_recorded), patch.object(
-			utils, "update_payment_details"
-		), patch.object(utils, "complete_enrollment"), patch("lms.wtf_meta.queue_purchase") as queue:
+		with (
+			patch.object(utils, "get_payment_callback_data", return_value=data),
+			patch.object(utils, "serialize_callbacks_without_the_constraint"),
+			patch.object(utils, "payment_already_recorded", return_value=already_recorded),
+			patch.object(utils, "update_payment_details"),
+			patch.object(utils, "complete_enrollment"),
+			patch("lms.wtf_meta.queue_purchase") as queue,
+		):
 			utils.update_payment_record("LMS Course", "sports-nutrition")
 		return queue
 
@@ -284,8 +306,9 @@ class TestBrowserTracking(_SiteConf):
 			self.assertEqual(wtf_meta.get_browser_tracking(), {})
 
 	def test_pixel_and_ga4_ids_without_pending_purchase(self):
-		with patch.dict(frappe.conf, {**CONF, "ga4_measurement_id": "G-ABC123"}), patch.object(
-			wtf_meta, "pop_browser_purchase", return_value=None
+		with (
+			patch.dict(frappe.conf, {**CONF, "ga4_measurement_id": "G-ABC123"}),
+			patch.object(wtf_meta, "pop_browser_purchase", return_value=None),
 		):
 			tracking = wtf_meta.get_browser_tracking()
 		self.assertEqual(tracking, {"pixel_id": "2804119553060376", "ga4_id": "G-ABC123", "purchase": None})
@@ -296,10 +319,12 @@ class TestBrowserTracking(_SiteConf):
 		cache.get_value.return_value = "PAY-0001"
 		db = MagicMock()
 		db.get_value.return_value = payment_row(member="learner@example.com")
-		with patch.dict(frappe.conf, CONF), patch.object(frappe, "cache", cache), patch.object(
-			frappe, "db", db
-		), patch.object(frappe, "session", frappe._dict(user="learner@example.com")), patch.object(
-			wtf_meta, "_title", return_value="Sports Nutrition"
+		with (
+			patch.dict(frappe.conf, CONF),
+			patch.object(frappe, "cache", cache),
+			patch.object(frappe, "db", db),
+			patch.object(frappe, "session", frappe._dict(user="learner@example.com")),
+			patch.object(wtf_meta, "_title", return_value="Sports Nutrition"),
 		):
 			purchase = wtf_meta.pop_browser_purchase()
 		cache.delete_value.assert_called_once()
@@ -317,19 +342,27 @@ class TestBrowserTracking(_SiteConf):
 		)
 
 	def test_pending_purchase_of_another_user_or_unpaid_is_ignored(self):
-		for row in (payment_row(member="someone@else.com"), payment_row(member="learner@example.com", payment_received=0)):
+		for row in (
+			payment_row(member="someone@else.com"),
+			payment_row(member="learner@example.com", payment_received=0),
+		):
 			cache = MagicMock()
 			cache.get_value.return_value = "PAY-0001"
 			db = MagicMock()
 			db.get_value.return_value = row
-			with patch.object(frappe, "cache", cache), patch.object(frappe, "db", db), patch.object(
-				frappe, "session", frappe._dict(user="learner@example.com")
+			with (
+				patch.object(frappe, "cache", cache),
+				patch.object(frappe, "db", db),
+				patch.object(frappe, "session", frappe._dict(user="learner@example.com")),
 			):
 				self.assertIsNone(wtf_meta.pop_browser_purchase())
 
 	def test_guest_has_no_pending_purchase(self):
 		cache = MagicMock()
-		with patch.object(frappe, "cache", cache), patch.object(frappe, "session", frappe._dict(user="Guest")):
+		with (
+			patch.object(frappe, "cache", cache),
+			patch.object(frappe, "session", frappe._dict(user="Guest")),
+		):
 			self.assertIsNone(wtf_meta.pop_browser_purchase())
 		cache.get_value.assert_not_called()
 
