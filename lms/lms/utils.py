@@ -2755,6 +2755,12 @@ def update_payment_record(doctype: str, docname: str):
 
 	complete_enrollment(data.payment, doctype, docname)
 
+	# WTF: Meta Purchase (CAPI + pixel). Here, and only here, payment_received has just gone
+	# 0 -> 1 under the row lock above; queued after commit and fails open (lms/wtf_meta.py).
+	from lms.wtf_meta import queue_purchase
+
+	queue_purchase(data.payment)
+
 
 def get_payment_callback_data(doctype: str, docname: str) -> dict | None:
 	"""The payload of the callback being handled, which is the only thing that
