@@ -6,6 +6,7 @@ import shutil
 import tempfile
 import zipfile
 from datetime import date, datetime, timedelta
+from urllib.request import urlopen
 
 import frappe
 from frappe import _
@@ -35,6 +36,30 @@ ALLOWED_ASSET_EXTENSIONS = {
 	".pdf",
 }
 MAX_IMPORTED_ASSET_BYTES = 200 * 1024 * 1024
+REMOTE_ASSET_TIMEOUT = 30
+
+
+def is_media_cdn_url(url):
+	"""Whether url is an object on this site's media CDN (lms.wtf_storage).
+
+	Only the configured CDN is fetched: lesson content is author-controlled, and
+	fetching any http(s) URL it names would be SSRF (e.g. instance metadata).
+	"""
+	cdn = (frappe.conf.get("wtf_media_cdn") or "").rstrip("/")
+	return bool(cdn) and isinstance(url, str) and url.startswith(cdn + "/")
+
+
+def download_remote_asset(url):
+	"""The bytes of a CDN asset, or None (logged) when it cannot be fetched."""
+	if not is_media_cdn_url(url):
+		frappe.log_error(title="Course export: asset skipped", message=f"Not a media CDN URL: {url}")
+		return None
+	try:
+		with urlopen(url, timeout=REMOTE_ASSET_TIMEOUT) as response:
+			return response.read()
+	except Exception:
+		frappe.log_error(title="Course export: asset skipped", message=f"{url}\n\n{frappe.get_traceback()}")
+		return None
 
 
 def export_course_zip(course_name):
@@ -170,6 +195,8 @@ def get_course_assets(course, lessons, instructors, evaluator):
 
 
 def read_asset_content(url):
+	if isinstance(url, str) and url.startswith(("http://", "https://")):
+		return download_remote_asset(url)
 	try:
 		file_doc = frappe.get_doc("File", {"file_url": url})
 		file_path = file_doc.get_full_path()
@@ -272,8 +299,17 @@ def write_assessments_json(zip_file, assessments, questions, test_cases):
 def write_assets(zip_file, assets):
 	assets = list(set(assets))
 	for asset in assets:
+		if not asset or not isinstance(asset, str):
+			continue
+		if asset.startswith(("http://", "https://")):
+			# media on the CDN has no local file; fetch it (failures are logged and skipped)
+			content = download_remote_asset(asset)
+			if content is not None:
+				safe_filename = sanitize_string(os.path.basename(asset.split("?")[0].split("#")[0]))
+				zip_file.writestr(f"assets/{safe_filename}", content)
+			continue
 		real_path = frappe.get_site_path(asset.lstrip("/"))
-		if not asset or not isinstance(asset, str) or not is_safe_path(real_path):
+		if not is_safe_path(real_path):
 			continue
 
 		file_doc = frappe.get_doc("File", {"file_url": asset})
