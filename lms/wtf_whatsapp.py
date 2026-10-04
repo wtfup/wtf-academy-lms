@@ -25,10 +25,11 @@ LMS Certificate after_insert (certificate ready), hourly payment pending, daily 
 
 import hashlib
 import re
+from datetime import timedelta
 
 import frappe
 import requests
-from frappe.utils import cint, flt
+from frappe.utils import add_days, cint, flt, getdate, now_datetime, nowdate
 
 DOCTYPE = "WTF WhatsApp Message"
 DEFAULT_URL = "https://wastudio.wtflabs.ai"
@@ -265,11 +266,19 @@ def send_template(user_or_phone, template, params, button_param=None, key=None, 
 			return "skipped_no_opt_in"
 
 		k = dedupe_key(template, user, target, key)
-		existing = frappe.db.get_value(DOCTYPE, {"dedupe_key": k}, ["name", "status"], as_dict=True, for_update=True)
+		existing = frappe.db.get_value(
+			DOCTYPE, {"dedupe_key": k}, ["name", "status"], as_dict=True, for_update=True
+		)
 		if existing and existing.status not in RETRYABLE:
 			return "duplicate"
 
-		row = {"user": user, "phone_masked": mask_phone(target), "template": template, "dedupe_key": k, "error": None}
+		row = {
+			"user": user,
+			"phone_masked": mask_phone(target),
+			"template": template,
+			"dedupe_key": k,
+			"error": None,
+		}
 		if not is_template_approved(template):
 			_write_row(existing, {**row, "status": "skipped_not_approved"})
 			return "skipped_not_approved"
@@ -466,4 +475,195 @@ def send_certificate_ready(certificate):
 		button = f"user/{frappe.db.get_value('User', cert.member, 'username')}/certificates"
 	else:
 		return
-	send_template(cert.member, CERTIFICATE_READY, [user_first_name(cert.member), title], button, key=cert.name)
+	send_template(
+		cert.member, CERTIFICATE_READY, [user_first_name(cert.member), title], button, key=cert.name
+	)
+
+
+# ---------------------------------------------------------------- scheduler jobs
+#
+# Each job may run late, twice or not at all on a given tick; the dedupe log is what makes a
+# message go out once. Windows are chosen so a late run still finds its rows:
+# - payment pending (hourly): any unpaid course checkout created 1 to 24 hours ago, key = the
+#   payment, so the first run after the 1-hour mark sends and later runs dedupe.
+# - trial day N (daily): users whose signup falls on the calendar day today - N, key "trial"
+#   (the template differs per day). A run later the same day selects the same users and
+#   dedupes; a day with no run is not backfilled (no stale "yesterday" message on day 9).
+# - learning nudge (daily): key "<course>:<today>", plus no nudge for that course in the last
+#   7 days, so a learner idle for weeks hears from us at most once a week.
+
+
+def _each(rows, fn, label):
+	for row in rows:
+		try:
+			fn(row)
+		except Exception as e:
+			_log(label, None, f"{row.get('name')}: {type(e).__name__}")
+
+
+def send_payment_pending(now=None):
+	"""Hourly: academy_payment_pending_v1 once per unpaid course checkout (latest per learner+course)."""
+	now = now or now_datetime()
+	rows = frappe.get_all(
+		"LMS Payment",
+		filters=[
+			["payment_received", "=", 0],
+			["payment_for_document_type", "=", "LMS Course"],
+			["payment_for_certificate", "=", 0],
+			["creation", ">=", now - timedelta(hours=24)],
+			["creation", "<=", now - timedelta(hours=1)],
+		],
+		fields=PAYMENT_FIELDS,
+		order_by="creation desc",
+	)
+	latest, seen = [], set()
+	for row in rows:
+		pair = (row.member, row.payment_for_document)
+		if row.member and pair not in seen:
+			seen.add(pair)
+			latest.append(row)
+
+	def send(row):
+		if frappe.db.exists(
+			"LMS Payment",
+			{
+				"member": row.member,
+				"payment_received": 1,
+				"payment_for_document_type": "LMS Course",
+				"payment_for_document": row.payment_for_document,
+			},
+		):
+			return
+		course = row.payment_for_document
+		send_template(
+			row.member,
+			PAYMENT_PENDING,
+			[user_first_name(row.member), course_title(course), format_inr(payment_total(row))],
+			course,
+			key=row.name,
+			phone=billing_phone(row),
+		)
+
+	_each(latest, send, PAYMENT_PENDING)
+
+
+TRIAL_DAYS = ((1, TRIAL_DAY1), (3, TRIAL_DAY3), (7, TRIAL_DAY7))
+
+
+def trial_course(user):
+	"""The course a trial learner enrolled in (first, free), else the course they signed up from."""
+	enrolled = frappe.get_all(
+		"LMS Enrollment", filters={"member": user.name}, fields=["course"], order_by="creation asc", limit=1
+	)
+	if enrolled and enrolled[0].course:
+		return enrolled[0].course
+	course = user.get("wtf_signup_course")
+	return course if course and frappe.db.exists("LMS Course", course) else None
+
+
+def course_price(course):
+	row = frappe.db.get_value("LMS Course", course, ["paid_course", "course_price", "currency"], as_dict=True)
+	if not row or not cint(row.paid_course) or flt(row.course_price) <= 0:
+		return None
+	if row.currency and row.currency != "INR":
+		return f"{row.currency} {flt(row.course_price):,.0f}"
+	return format_inr(row.course_price)
+
+
+def send_trial_reminders(today=None):
+	"""Daily: trial day 1/3/7 to opted-in learners with no paid enrolment (marketing)."""
+	today = getdate(today or nowdate())
+	for days, template in TRIAL_DAYS:
+		start = add_days(today, -days)
+		users = frappe.get_all(
+			"User",
+			filters=[
+				["enabled", "=", 1],
+				["wtf_whatsapp_opt_in", "=", 1],
+				["mobile_no", "is", "set"],
+				["creation", ">=", str(start)],
+				["creation", "<", str(add_days(start, 1))],
+			],
+			fields=["name", "first_name", "wtf_signup_course"],
+		)
+
+		def send(user, template=template):
+			if frappe.db.exists("LMS Payment", {"member": user.name, "payment_received": 1}):
+				return
+			course = trial_course(user)
+			if not course:
+				return
+			params = [first_name(user.first_name), course_title(course)]
+			if template == TRIAL_DAY7:
+				price = course_price(course)
+				if not price:
+					return
+				params.append(price)
+			send_template(user.name, template, params, course, key="trial")
+
+		_each(users, send, template)
+
+
+NUDGE_IDLE_DAYS = 5
+NUDGE_EVERY_DAYS = 7
+
+
+def send_learning_nudges(now=None):
+	"""Daily: paid, opted-in learner with no lesson progress for 5 days (at most once per 7 days)."""
+	now = now or now_datetime()
+	today = getdate(now)
+	idle_since = now - timedelta(days=NUDGE_IDLE_DAYS)
+	opted = frappe.get_all(
+		"User",
+		filters={"enabled": 1, "wtf_whatsapp_opt_in": 1, "mobile_no": ["is", "set"]},
+		pluck="name",
+	)
+	if not opted:
+		return
+	enrollments = frappe.get_all(
+		"LMS Enrollment",
+		filters=[["member", "in", list(opted)], ["progress", "<", 100]],
+		fields=["name", "member", "course", "progress", "payment", "creation"],
+	)
+
+	def send(row):
+		if row.creation and row.creation > idle_since:
+			return
+		if not row.payment and not frappe.db.exists(
+			"LMS Payment",
+			{
+				"member": row.member,
+				"payment_received": 1,
+				"payment_for_document_type": "LMS Course",
+				"payment_for_document": row.course,
+			},
+		):
+			return
+		last = frappe.db.get_value(
+			"LMS Course Progress",
+			{"member": row.member, "course": row.course},
+			"modified",
+			order_by="modified desc",
+		)
+		if last and last > idle_since:
+			return
+		if frappe.db.exists(
+			DOCTYPE,
+			{
+				"template": LEARNING_NUDGE,
+				"user": row.member,
+				"dedupe_key": ["like", f"{LEARNING_NUDGE}:{row.member}:{row.course}:%"],
+				"status": ["in", ["sending", "sent", "failed"]],
+				"creation": [">", now - timedelta(days=NUDGE_EVERY_DAYS)],
+			},
+		):
+			return
+		send_template(
+			row.member,
+			LEARNING_NUDGE,
+			[user_first_name(row.member), course_title(row.course), f"{round(flt(row.progress))}%"],
+			row.course,
+			key=f"{row.course}:{today}",
+		)
+
+	_each(enrollments, send, LEARNING_NUDGE)

@@ -289,6 +289,7 @@ class TestPaymentCallbackHook(unittest.TestCase):
 			patch.object(utils, "update_payment_details"),
 			patch.object(utils, "complete_enrollment"),
 			patch("lms.wtf_meta.queue_purchase") as queue,
+			patch("lms.wtf_whatsapp.queue_enrolment_confirmed"),
 		):
 			utils.update_payment_record("LMS Course", "sports-nutrition")
 		return queue

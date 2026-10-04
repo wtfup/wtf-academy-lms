@@ -200,6 +200,8 @@ scheduler_events = {
 		"lms.lms.doctype.lms_course.lms_course.update_course_statistics",
 		"lms.lms.doctype.lms_certificate_request.lms_certificate_request.mark_eval_as_completed",
 		"lms.lms.doctype.lms_live_class.lms_live_class.update_attendance",
+		# WTF: WhatsApp academy_payment_pending_v1 (lms/wtf_whatsapp.py)
+		"lms.wtf_whatsapp.send_payment_pending",
 	],
 	"daily": [
 		"lms.job.doctype.job_opportunity.job_opportunity.update_job_openings",
@@ -208,6 +210,9 @@ scheduler_events = {
 		"lms.lms.doctype.lms_live_class.lms_live_class.send_live_class_reminder",
 		"lms.lms.doctype.lms_course.lms_course.send_notification_for_published_courses",
 		"lms.lms.doctype.course_lesson.course_lesson.rename_settled_untitled_lessons",
+		# WTF: WhatsApp trial day 1/3/7 and learning nudge, opt-in only (lms/wtf_whatsapp.py)
+		"lms.wtf_whatsapp.send_trial_reminders",
+		"lms.wtf_whatsapp.send_learning_nudges",
 	],
 }
 
