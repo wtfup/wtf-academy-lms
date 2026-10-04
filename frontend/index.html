@@ -251,6 +251,8 @@
 		<meta name="twitter:title" content="{{ meta.title | e }}" />
 		<meta name="twitter:image" content="{{ meta.image | e }}" />
 		<meta name="twitter:description" content="{{ meta.description | e }}" />
+		<!-- WTF: Meta pixel / GA4 (lms/templates/wtf_tracking.html, lms/wtf_meta.py) -->
+		{% include "templates/wtf_tracking.html" %}
 	</head>
 	<body class="sm:overscroll-y-none no-scrollbar">
 		<div id="app">

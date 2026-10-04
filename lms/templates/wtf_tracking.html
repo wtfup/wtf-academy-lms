@@ -1,0 +1,43 @@
+{#- WTF: Meta pixel + GA4 on the LMS SPA page. Included from frontend/index.html (built into
+    lms/www/_lms.html); `wtf_tracking` comes from lms.wtf_meta.get_browser_tracking() via
+    lms/www/_lms.py. Public ids only; the Purchase (same eventID as the server CAPI event,
+    "purchase:<LMS Payment>") renders once, on the first LMS page after a paid checkout. -#}
+{%- set t = wtf_tracking or {} -%}
+{%- set p = t.purchase -%}
+{%- if t.pixel_id %}
+<script>
+	!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+	n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;
+	n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;
+	t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,
+	document,'script','https://connect.facebook.net/en_US/fbevents.js');
+	fbq('init', {{ t.pixel_id | tojson }});
+	fbq('track', 'PageView');
+	{%- if p %}
+	fbq('track', 'Purchase', {{ {
+		"value": p.value,
+		"currency": p.currency,
+		"content_ids": p.content_ids,
+		"content_type": p.content_type,
+		"content_name": p.content_name,
+	} | tojson }}, {eventID: {{ p.event_id | tojson }}});
+	{%- endif %}
+</script>
+{%- endif %}
+{%- if t.ga4_id %}
+<script async src="https://www.googletagmanager.com/gtag/js?id={{ t.ga4_id | urlencode }}"></script>
+<script>
+	window.dataLayer = window.dataLayer || [];
+	function gtag(){dataLayer.push(arguments);}
+	gtag('js', new Date());
+	gtag('config', {{ t.ga4_id | tojson }});
+	{%- if p %}
+	gtag('event', 'purchase', {{ {
+		"transaction_id": p.transaction_id,
+		"value": p.value,
+		"currency": p.currency,
+		"items": [{"item_id": p.content_ids[0], "item_name": p.content_name}],
+	} | tojson }});
+	{%- endif %}
+</script>
+{%- endif %}
