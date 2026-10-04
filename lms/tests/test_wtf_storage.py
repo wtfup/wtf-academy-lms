@@ -65,3 +65,16 @@ class TestWtfStorage(IntegrationTestCase):
 			s3.delete_object.assert_not_called()
 			b.delete()
 			s3.delete_object.assert_called_once()
+
+	def test_s3_delete_failure_does_not_block_file_delete_and_logs(self):
+		s3 = MagicMock()
+		s3.delete_object.side_effect = Exception("AccessDenied")
+		with patch.dict(frappe.conf, CONF), patch("lms.wtf_storage._client", return_value=s3):
+			f = self._file(content=os.urandom(32))
+			f.reload()
+			name = f.name
+			before = frappe.db.count("Error Log")
+			f.delete()
+		s3.delete_object.assert_called_once()
+		assert not frappe.db.exists("File", name)
+		assert frappe.db.count("Error Log") == before + 1

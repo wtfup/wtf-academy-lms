@@ -67,4 +67,8 @@ def delete_public_file(doc, method=None):
     if frappe.db.exists("File", {"file_url": doc.file_url, "name": ["!=", doc.name]}):
         return  # another record still uses this object
     bucket, cdn, region = conf
-    _client(region).delete_object(Bucket=bucket, Key=doc.file_url[len(cdn) + 1:])
+    try:
+        _client(region).delete_object(Bucket=bucket, Key=doc.file_url[len(cdn) + 1:])
+    except Exception:
+        # an orphaned object is acceptable; an S3/IAM error must never block the File delete
+        frappe.log_error(title="WTF media delete failed", message=frappe.get_traceback())
