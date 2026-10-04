@@ -196,6 +196,9 @@ def web_sign_up(
 		if "mobile_no" not in whatsapp:
 			raise
 		frappe.db.rollback()
+		# frappe.throw queued "Mobile No ... already exists" for the response: drop it, or the
+		# successful signup shows an error popup and reveals the number is on another account
+		frappe.local.message_log = []
 		whatsapp = {key: value for key, value in whatsapp.items() if key != "mobile_no"}
 		whatsapp["wtf_whatsapp_opt_in"] = 0
 		user = insert_user(whatsapp)

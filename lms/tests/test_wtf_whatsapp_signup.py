@@ -21,9 +21,12 @@ class SignupHarness(unittest.TestCase):
 		self._request = getattr(frappe.local, "request", None)
 		# no request: rate_limit passes straight through (local_redirect_path is mocked below)
 		frappe.local.request = None
+		self._message_log = getattr(frappe.local, "message_log", None)
+		frappe.local.message_log = []
 
 	def tearDown(self):
 		frappe.local.request = self._request
+		frappe.local.message_log = self._message_log
 
 	def run_signup(
 		self, *args, phone_taken=False, courses=None, queue_error=None, mobile_race=False, **kwargs
@@ -61,7 +64,13 @@ class SignupHarness(unittest.TestCase):
 				email_sent=True, ignore_permissions=False, ignore_password_policy=False
 			)
 			if mobile_race and "mobile_no" in values and len(attempts) == 1:
-				doc.insert.side_effect = frappe.UniqueValidationError("Mobile No already exists")
+
+				def duplicate_mobile(*a, **kw):
+					# frappe.throw queues the message for the response before raising
+					frappe.local.message_log.append({"message": "Mobile No 919876543210 already exists"})
+					raise frappe.UniqueValidationError("Mobile No already exists")
+
+				doc.insert.side_effect = duplicate_mobile
 			return doc
 
 		queue = MagicMock(side_effect=queue_error)
@@ -80,7 +89,14 @@ class SignupHarness(unittest.TestCase):
 			patch("frappe.log_error"),
 		):
 			result = user_module.web_sign_up(*args, **kwargs)
-		return SimpleNamespace(result=result, created=created, queue=queue, attempts=attempts, db=db)
+		return SimpleNamespace(
+			result=result,
+			created=created,
+			queue=queue,
+			attempts=attempts,
+			db=db,
+			message_log=list(frappe.local.message_log),
+		)
 
 
 class TestBackwardCompatibleSignup(SignupHarness):
@@ -201,6 +217,8 @@ class TestSignupWhatsApp(SignupHarness):
 		self.assertEqual(r.attempts[1]["wtf_whatsapp_opt_in"], 0)
 		r.db.rollback.assert_called_once()
 		r.queue.assert_not_called()
+		# the successful response must not carry the duplicate-number error (popup + leak)
+		self.assertEqual(r.message_log, [])
 
 	def test_whatsapp_failure_never_breaks_signup(self):
 		r = self.run_signup(
