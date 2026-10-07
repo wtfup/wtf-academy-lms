@@ -14,10 +14,10 @@ Nothing sensitive is logged, and the reply carries nothing about the row. No mes
 import hmac
 import json
 import re
+import secrets
 
 import frappe
 from frappe import _
-from frappe.rate_limiter import rate_limit
 from frappe.utils import validate_email_address
 
 DOCTYPE = "Academy Lead"
@@ -34,19 +34,41 @@ _PHONE = re.compile(r"^(?:\+?91)?([6-9]\d{9})$")
 _SLUG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _IP_HASH = re.compile(r"^[0-9a-f]{64}$")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+# Bidi embeddings/overrides/isolates and direction marks: stripped from names and city so a lead cannot
+# reorder how text renders in the desk.
+_BIDI = re.compile("[\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c]")
+# One plain address: no list separators, no whitespace, exactly one "@".
+_EMAIL_SHAPE = re.compile(r"^[^\s@,;]+@[^\s@,;]+$")
 
-# Every call comes from the site container (one IP), so this is a site-wide ceiling on top of the
-# site's own 5 per minute per visitor.
-RATE_LIMIT = 60
+# Ceiling for AUTHENTICATED calls only, on one global counter. Every legitimate call comes from the site
+# container, so a per-IP bucket here would mean nothing; per-visitor limiting is the site's (5 per minute).
+# Unauthenticated calls are refused before the counter is touched, so they cannot use up the allowance.
+RATE_KEY = "academy_lead:global"
+RATE_LIMIT = 120
 RATE_SECONDS = 60
+
+# Compared against when no secret is configured, so the timing of a refusal does not reveal whether one is.
+_DUMMY = secrets.token_hex(24)
 
 
 def _secret_ok() -> bool:
-	expected = frappe.conf.get("academy_lead_secret")
-	if not expected or not isinstance(expected, str):
-		return False
+	configured = frappe.conf.get("academy_lead_secret")
+	configured = configured if isinstance(configured, str) and configured else None
 	given = frappe.get_request_header(HEADER) or ""
-	return hmac.compare_digest(given.encode(), expected.encode())
+	if not isinstance(given, str):
+		given = ""
+	match = hmac.compare_digest(given.encode(), (configured or _DUMMY).encode())
+	return bool(configured) and match
+
+
+def _within_ceiling() -> bool:
+	key = frappe.cache.make_key(RATE_KEY)
+	count = frappe.cache.incrby(key, 1)
+	# The first hit of a window starts its expiry; the ttl check also repairs a key that lost its expiry
+	# (e.g. the window ended between two calls), so the counter can never stick for good.
+	if count == 1 or frappe.cache.ttl(key) < 0:
+		frappe.cache.expire(key, RATE_SECONDS)
+	return count <= RATE_LIMIT
 
 
 def _invalid(field: str):
@@ -54,13 +76,15 @@ def _invalid(field: str):
 	frappe.throw(_("Invalid lead field: {0}").format(field), frappe.ValidationError)
 
 
-def _text(value, field: str, *, max_len: int, min_len: int = 0, required: bool = False) -> str:
+def _text(value, field: str, *, max_len: int, min_len: int = 0, required: bool = False, strip_bidi: bool = False) -> str:
 	if value is None or value == "":
 		if required:
 			_invalid(field)
 		return ""
 	if not isinstance(value, str):
 		_invalid(field)
+	if strip_bidi:
+		value = _BIDI.sub("", value)
 	v = re.sub(r"[ \t]+", " ", value.strip())
 	if len(v) < min_len or len(v) > max_len or _CONTROL.search(v):
 		_invalid(field)
@@ -80,7 +104,6 @@ def _consent(value) -> bool:
 
 
 @frappe.whitelist(allow_guest=True, methods=["POST"])
-@rate_limit(limit=RATE_LIMIT, seconds=RATE_SECONDS)
 def create_lead(
 	full_name=None,
 	phone=None,
@@ -91,23 +114,26 @@ def create_lead(
 	answers_json=None,
 	created_from_ip_hash=None,
 ):
+	# Secret first: a refused call never reaches the counter. One message for every refusal.
 	if not _secret_ok():
 		frappe.throw(_("Not permitted"), frappe.PermissionError)
+	if not _within_ceiling():
+		frappe.throw(_("Too many leads right now. Please try again in a minute."), frappe.RateLimitExceededError)
 
-	name = _text(full_name, "full_name", max_len=NAME_MAX, min_len=2, required=True)
+	name = _text(full_name, "full_name", max_len=NAME_MAX, min_len=2, required=True, strip_bidi=True)
 
 	mobile = normalize_phone(phone)
 	if not mobile:
 		_invalid("phone")
 
 	mail = _text(email, "email", max_len=EMAIL_MAX, required=True).lower()
-	if validate_email_address(mail, throw=False) != mail:
+	if not _EMAIL_SHAPE.match(mail) or validate_email_address(mail, throw=False) != mail:
 		_invalid("email")
 
 	if not _consent(consent):
 		_invalid("consent")
 
-	town = _text(city, "city", max_len=CITY_MAX)
+	town = _text(city, "city", max_len=CITY_MAX, strip_bidi=True)
 
 	course = _text(recommended_course, "recommended_course", max_len=COURSE_MAX)
 	if course and not _SLUG.match(course):

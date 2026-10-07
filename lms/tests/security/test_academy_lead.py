@@ -81,6 +81,15 @@ class TestAcademyLead(IntegrationTestCase):
 		frappe.local.request_ip = "203.0.113.9"
 		for k in frappe.cache.get_keys("rl:"):
 			frappe.cache.delete(k.decode() if isinstance(k, bytes) else k)
+		self._reset_ceiling()
+
+	def _ceiling_key(self):
+		from lms.lms import academy_lead
+
+		return frappe.cache.make_key(academy_lead.RATE_KEY)
+
+	def _reset_ceiling(self):
+		frappe.cache.delete(self._ceiling_key())
 
 	def tearDown(self):
 		frappe.local.conf.academy_lead_secret = self._conf
@@ -107,16 +116,52 @@ class TestAcademyLead(IntegrationTestCase):
 		self.assertIn(fn, frappe.guest_methods)
 		self.assertEqual(frappe.allowed_http_methods_for_whitelisted_func[fn], ["POST"])
 
-	def test_is_rate_limited(self):
+	def test_ceiling_is_a_global_key_of_120_per_minute(self):
+		from lms.lms import academy_lead
+
+		self.assertEqual(academy_lead.RATE_KEY, "academy_lead:global")
+		self.assertEqual((academy_lead.RATE_LIMIT, academy_lead.RATE_SECONDS), (120, 60))
+
+	def test_unauthenticated_calls_do_not_consume_the_allowance(self):
 		from lms.lms import academy_lead
 
 		d = _valid()
-		for _ in range(academy_lead.RATE_LIMIT):
+		for i in range(200):
 			with self.assertRaises(frappe.PermissionError):
-				self._call(d, header=False)
+				if i % 2:
+					self._call(d, header=False)
+				else:
+					self._call(d, secret="wrong")
+		self.assertFalse(frappe.cache.get(self._ceiling_key()))
+		# fill the authenticated allowance to one below the ceiling: the next good call still lands
+		frappe.cache.setex(self._ceiling_key(), 60, academy_lead.RATE_LIMIT - 1)
+		self.assertEqual(self._call(d), {"ok": True})
+		self.assertEqual(self._count(d["email"]), 1)
+
+	def test_authenticated_ceiling(self):
+		from lms.lms import academy_lead
+
+		frappe.cache.setex(self._ceiling_key(), 60, academy_lead.RATE_LIMIT)
+		d = _valid()
 		with self.assertRaises(frappe.RateLimitExceededError):
 			self._call(d)
 		self.assertEqual(self._count(d["email"]), 0)
+		# the ceiling counter does not depend on the caller IP
+		frappe.local.request_ip = "198.51.100.77"
+		with self.assertRaises(frappe.RateLimitExceededError):
+			self._call(_valid())
+
+	def test_authenticated_calls_count_towards_the_ceiling_with_an_expiry(self):
+		self._call(_valid())
+		self._call(_valid())
+		self.assertEqual(int(frappe.cache.get(self._ceiling_key())), 2)
+		ttl = frappe.cache.ttl(self._ceiling_key())
+		self.assertTrue(0 < ttl <= 60, ttl)
+
+	def test_a_counter_without_expiry_is_repaired(self):
+		frappe.cache.incrby(self._ceiling_key(), 5)  # no ttl
+		self._call(_valid())
+		self.assertTrue(0 < frappe.cache.ttl(self._ceiling_key()) <= 60)
 
 	# ---- secret ----
 	def test_missing_header_is_403(self):
@@ -140,6 +185,29 @@ class TestAcademyLead(IntegrationTestCase):
 				self._call(d, secret=s)
 		self.assertEqual(self._count(d["email"]), 0)
 
+	def _error(self, **kw):
+		try:
+			self._call(_valid(), **kw)
+		except frappe.PermissionError as e:
+			return (type(e), str(e), frappe.local.message_log[-1] if frappe.local.message_log else None)
+		self.fail("expected PermissionError")
+
+	def test_same_403_configured_or_not_and_compare_digest_always_runs(self):
+		from unittest.mock import patch
+
+		from lms.lms import academy_lead
+
+		frappe.local.message_log = []
+		configured = self._error(secret="wrong")
+		frappe.local.message_log = []
+		frappe.local.conf.academy_lead_secret = None
+		with patch.object(academy_lead.hmac, "compare_digest", wraps=academy_lead.hmac.compare_digest) as cd:
+			unconfigured = self._error(secret="wrong")
+			missing = self._error(header=False)
+		self.assertEqual(configured[:2], unconfigured[:2])
+		self.assertEqual(unconfigured[:2], missing[:2])
+		self.assertEqual(cd.call_count, 2, "compare_digest must run against a dummy when the secret is unset")
+
 	# ---- golden path ----
 	def test_valid_call_inserts_exactly_one_lead(self):
 		d = _valid()
@@ -155,6 +223,13 @@ class TestAcademyLead(IntegrationTestCase):
 		self.assertEqual(r.consent, 1)
 		self.assertEqual(json.loads(r.answers_json), {"situation": "student", "city": "Pune"})
 		self.assertEqual(r.created_from_ip_hash, "a" * 64)
+
+	def test_bidi_and_format_controls_are_stripped_from_name_and_city(self):
+		marks = "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\u200e\u200f\u061c"
+		d = _valid(full_name=f"Iso{marks} Lead\u202e Test", city=f"\u2067Pu{marks}ne")
+		self._call(d)
+		row = frappe.db.get_value(DOCTYPE, {"email": d["email"]}, ["full_name", "city"], as_dict=True)
+		self.assertEqual((row.full_name, row.city), ("Iso Lead Test", "Pune"))
 
 	def test_source_cannot_be_overridden(self):
 		d = _valid(source="evil")
@@ -172,6 +247,10 @@ class TestAcademyLead(IntegrationTestCase):
 			"bad phone": {"phone": "12345"},
 			"foreign phone": {"phone": "+1 415 555 0100"},
 			"bad email": {"email": "x@"},
+			"two emails comma": {"email": "qa+a@wtfgymsacademy.com,evil@example.com"},
+			"two emails semicolon": {"email": "qa+a@wtfgymsacademy.com;evil@example.com"},
+			"email with space": {"email": "qa+a@wtfgymsacademy.com evil@example.com"},
+			"two at signs": {"email": "qa+a@evil@wtfgymsacademy.com"},
 			"long city": {"city": "x" * 61},
 			"bad course": {"recommended_course": "<script>"},
 			"long course": {"recommended_course": "a" * 141},
