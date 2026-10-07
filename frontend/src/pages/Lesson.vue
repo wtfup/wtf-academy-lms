@@ -1,5 +1,5 @@
 <template>
-	<div v-if="lesson.data" class="">
+	<div v-if="lesson.data" class="wtf-paper">
 		<PageHeader :breadcrumbs="breadcrumbs">
 			<template #actions>
 				<CertificationLinks :courseName="courseName" />
@@ -115,7 +115,7 @@
 							class="flex flex-col space-y-3 md:space-y-0 md:flex-row md:items-center justify-between"
 						>
 							<div class="flex flex-col">
-								<h1 class="text-4xl-semibold text-ink-gray-9">
+								<h1 class="wtf-display text-4xl text-ink-gray-9">
 									{{ lesson.data.title }}
 								</h1>
 

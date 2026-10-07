@@ -59,3 +59,43 @@
 	font-weight: 700;
 	letter-spacing: 0.04em;
 }
+
+/* Operator palette, shared with the marketing site. Anton is self-hosted
+   (same Google Fonts file the site serves via next/font); no runtime CDN. */
+@font-face {
+	font-family: 'Anton';
+	font-style: normal;
+	font-weight: 400;
+	font-display: swap;
+	src: url('../assets/fonts/anton-latin.woff2') format('woff2');
+}
+
+:root {
+	--wtf-paper: #F6F3EE;
+	--wtf-ink: #0B0B0C;
+	--wtf-red: #D2000B;
+	--wtf-red-pressed: #B0000A;
+	--wtf-muted: #6B6862;
+	--wtf-bone: #FFFFFF;
+}
+
+/* Paper ground for learner pages (light mode only). Cards and lesson reading
+   areas keep their own white surface. */
+html:not([data-theme='dark']) {
+	background-color: var(--wtf-paper);
+}
+.wtf-paper {
+	background-color: var(--wtf-paper);
+}
+[data-theme='dark'] .wtf-paper {
+	background-color: transparent;
+}
+
+/* Page-level headings in the learner portal only. Never lesson body or desk. */
+.wtf-display {
+	font-family: 'Anton', 'Inter', system-ui, sans-serif;
+	font-weight: 400;
+	letter-spacing: 0.01em;
+	text-transform: uppercase;
+	line-height: 1.1;
+}

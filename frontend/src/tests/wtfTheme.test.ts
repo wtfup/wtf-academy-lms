@@ -82,4 +82,33 @@ describe('WTF theme layer', () => {
 		expect(contrast(tok('--ink-base'), tok('--surface-gray-9'))).toBeGreaterThanOrEqual(4.5)
 		expect(contrast(tok('--surface-gray-10'), tok('--surface-base'))).toBeGreaterThanOrEqual(2.5)
 	})
+
+	describe('Operator palette and display font', () => {
+		it('defines paper, ink and red tokens', () => {
+			expect(css).toMatch(/--wtf-paper:\s*#F6F3EE/i)
+			expect(css).toMatch(/--wtf-ink:\s*#0B0B0C/i)
+			expect(css).toMatch(/--wtf-red:\s*#D2000B/i)
+			expect(css).toMatch(/--wtf-red-pressed:\s*#B0000A/i)
+			expect(css).toMatch(/--wtf-muted:\s*#6B6862/i)
+		})
+
+		it('self-hosts Anton with no external font call', () => {
+			expect(css).toMatch(/@font-face\s*\{[^}]*font-family:\s*['"]Anton['"]/)
+			expect(css).toMatch(/url\(['"]?\.\.\/assets\/fonts\/anton-latin\.woff2/)
+			expect(fs.existsSync(path.join(__dirname, '../assets/fonts/anton-latin.woff2'))).toBe(true)
+			expect(css).not.toMatch(/https?:\/\//)
+		})
+
+		it('uses Anton for page-level headings only, via .wtf-display', () => {
+			expect(css).toMatch(/\.wtf-display\s*\{[^}]*font-family:[^;]*Anton/)
+			expect(css).not.toMatch(/\b(h1|h2|\.prose|\.ProseMirror)\s*\{[^}]*Anton/)
+		})
+
+		it('paints paper on the page and wires learner headings', () => {
+			expect(css).toMatch(/\.wtf-paper\s*\{[^}]*background(-color)?:\s*var\(--wtf-paper\)/)
+			const read = (f: string) => fs.readFileSync(path.join(__dirname, '../pages', f), 'utf8')
+			expect(read('Courses/CourseOverview.vue')).toContain('wtf-display')
+			expect(read('Lesson.vue')).toContain('wtf-display')
+		})
+	})
 })
